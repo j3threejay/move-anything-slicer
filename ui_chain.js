@@ -61,7 +61,7 @@ const s = {
     globalDecay:      500.0,
     velSens:          1,
     mode:             'gate',
-    editScope:        'G',       /* 'G'=global, 'P'=per-pad (jog click toggle) */
+    editScope:        'P',       /* 'G'=global, 'P'=per-pad (jog click toggle) */
     sliceCountActual: 0,
     slicerState:      0,
     selectedSlice:    0,
@@ -228,36 +228,36 @@ function drawScanFlash() {
 const MODE_LABELS = { '0': 'TRIG', '1': 'GATE' };
 function drawBankA() {
     clear_screen(); drawSampleName();
-    if (s.editScope === 'G') {
-        print(0, 13, '[G] Global', 1);
-        print(0, 23, 'Thresh:'+Math.round(s.threshold*100)+'%', 1);
-        print(0, 33, 'Vel:'+(s.velSens?'On':'Off'), 1);
-        print(0, 43, 'Atk:'+Math.round(s.globalAttack-5)+'ms  Dec:'+Math.round(s.globalDecay)+'ms', 1);
-        print(0, 53, 'Jog: Global Edit', 1);
-    } else {
+    if (s.editScope === 'P') {
         const p = pad();
         print(0, 13, '[P] Pad ' + (s.selectedSlice + 1), 1);
-        print(0, 23, 'Str:'+fmtMs(p.startTrim)+'  End:'+fmtMs(p.endTrim), 1);
-        print(0, 33, 'Atk:'+Math.round(p.attack - 5)+'ms', 1);
-        print(0, 43, 'Dec:'+Math.round(p.decay)+'ms', 1);
-        print(0, 53, 'Jog: Per-Pad Edit', 1);
+        print(0, 23, 'Atk:'+Math.round(p.attack - 5)+'ms  Dec:'+Math.round(p.decay)+'ms', 1);
+        print(0, 33, '', 1);
+        print(0, 43, 'Str:'+fmtMs(p.startTrim)+'  End:'+fmtMs(p.endTrim), 1);
+        print(0, 53, rangeStr(), 1);
+    } else {
+        print(0, 13, '[G] Global', 1);
+        print(0, 23, 'Atk:'+Math.round(s.globalAttack-5)+'ms  Dec:'+Math.round(s.globalDecay)+'ms', 1);
+        print(0, 33, '', 1);
+        print(0, 43, '', 1);
+        print(0, 53, rangeStr(), 1);
     }
 }
 function drawBankB() {
     const p = pad();
     clear_screen(); drawSampleName();
-    if (s.editScope === 'G') {
-        print(0, 13, '[G] Mode:'+s.mode.toUpperCase(), 1);
-        print(0, 23, 'Pitch:'+fmtPitch(s.pitch), 1);
-        print(0, 33, 'Gain:'+Math.round(s.globalGain*100)+'%', 1);
-        print(0, 43, 'Loop:'+LOOP_LABELS[p.loop], 1);
-        print(0, 53, 'Jog: Global Edit', 1);
-    } else {
+    if (s.editScope === 'P') {
         print(0, 13, '[P] Pad '+(s.selectedSlice+1), 1);
         print(0, 23, 'Mode:'+MODE_LABELS[String(p.modeOverride)], 1);
         print(0, 33, 'Pitch:'+fmtPitch(p.pitchOffset), 1);
         print(0, 43, 'Gain:x'+Math.round(p.gain*100)+'%', 1);
-        print(0, 53, 'Jog: Per-Pad Edit', 1);
+        print(0, 53, 'Loop:'+LOOP_LABELS[p.loop], 1);
+    } else {
+        print(0, 13, '[G] Global', 1);
+        print(0, 23, 'Mode:'+s.mode.toUpperCase(), 1);
+        print(0, 33, 'Pitch:'+fmtPitch(s.pitch), 1);
+        print(0, 43, 'Gain:'+Math.round(s.globalGain*100)+'%', 1);
+        print(0, 53, 'Loop:'+LOOP_LABELS[p.loop], 1);
     }
 }
 function drawBrowser() {
@@ -363,21 +363,20 @@ function onMidiMessageInternal(data) {
         return;
     }
 
-    /* Knobs 1-4: bank A (global or per-pad based on editScope) */
+    /* Knobs 1-4: bank A (per-pad or global based on editScope) */
     if (cc===MoveKnob1||cc===MoveKnob2||cc===MoveKnob3||cc===MoveKnob4) {
         s.knobBank='A'; s.dirty=true;
         const d=decodeDelta(val);
-        if (s.editScope === 'G') {
-            if (cc===MoveKnob1) adjustThreshold(d);
-            if (cc===MoveKnob2) adjustVelSens(d);
-            if (cc===MoveKnob3) adjustGlobalAttack(d);
-            if (cc===MoveKnob4) adjustGlobalDecay(d);
-        } else {
+        if (s.editScope === 'P') {
             if (s.slicerState!==1) return;
-            if (cc===MoveKnob1) adjustStartTrim(d);
-            if (cc===MoveKnob2) adjustEndTrim(d);
-            if (cc===MoveKnob3) adjustAttack(d);
-            if (cc===MoveKnob4) adjustDecay(d);
+            if (cc===MoveKnob1) adjustAttack(d);
+            if (cc===MoveKnob2) adjustDecay(d);
+            if (cc===MoveKnob3) adjustStartTrim(d);
+            if (cc===MoveKnob4) adjustEndTrim(d);
+        } else {
+            if (cc===MoveKnob1) adjustGlobalAttack(d);
+            if (cc===MoveKnob2) adjustGlobalDecay(d);
+            /* K3, K4 inactive in global scope */
         }
         return;
     }
