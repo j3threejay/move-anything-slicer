@@ -33,6 +33,7 @@ import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mj
 const SAMPLES_DIR      = '/data/UserData/UserLibrary/Samples';
 const SCREEN_W         = 128;
 const SCAN_FLASH_TICKS = 120;
+const DBLCLICK_TICKS   = 10;   /* double-click window (tune to taste) */
 const LOOP_LABELS      = ['Off', 'Loop', 'Ping'];
 const MAX_SLICES       = 128;
 const ROOT_NOTE        = 36;   /* C2 — chromatic mapping root, matches DSP */
@@ -71,6 +72,8 @@ const s = {
     browserEntries:   [],
     browserCursor:    0,
     browserScroll:    0,
+    jogClickTicks:    0,
+    jogClickAction:   null,
 };
 
 function gp(key, fallback) {
@@ -297,6 +300,7 @@ function tick() {
         const pv = parseInt(gp('preview_slices', 0));
         if (pv !== s.previewSlices) { s.previewSlices = pv; s.dirty = true; }
     }
+    if (s.jogClickTicks > 0) { s.jogClickTicks--; if (s.jogClickTicks === 0 && s.jogClickAction) { s.jogClickAction(); s.jogClickAction = null; } }
     if (s.scanFlashTicks > 0) { s.scanFlashTicks--; if (s.scanFlashTicks===0) s.dirty=true; }
     if (!s.dirty) return;
     s.dirty = false;
@@ -356,10 +360,20 @@ function onMidiMessageInternal(data) {
     if (cc === MoveMainButton && val > 0) {
         if (s.view === 'browser')     { browserSelect(); return; }
         if (s.view === 'sensitivity') { triggerScan(); s.view = 'main'; s.dirty = true; return; }
-        if (s.slicerState !== 1)      { triggerScan(); return; }
-        /* Toggle global/per-pad scope (both banks) */
-        s.editScope = s.editScope === 'G' ? 'P' : 'G';
-        s.dirty = true;
+        /* Double-click detection: second click within window → file browser */
+        if (s.jogClickTicks > 0) {
+            s.jogClickTicks = 0; s.jogClickAction = null;
+            browserOpen(s.browserPath || SAMPLES_DIR);
+            s.view = 'browser'; s.dirty = true;
+            return;
+        }
+        /* First click — defer action, start double-click window */
+        if (s.slicerState !== 1) {
+            s.jogClickAction = () => { triggerScan(); };
+        } else {
+            s.jogClickAction = () => { s.editScope = s.editScope === 'G' ? 'P' : 'G'; s.dirty = true; };
+        }
+        s.jogClickTicks = DBLCLICK_TICKS;
         return;
     }
 
