@@ -74,7 +74,11 @@
             "",
             "Ready: click toggles",
             " Per-Pad / Global",
-            " edit scope."
+            " edit scope.",
+            "",
+            "Double-click jog to",
+            "return to file browser",
+            "and load a new sample."
           ]
         },
         {

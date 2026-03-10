@@ -69,6 +69,7 @@ current scope.
 - **Turn**: scroll browser / adjust threshold
 - **Click (browser/idle)**: select sample / trigger scan
 - **Click (ready)**: toggle Per-Pad / Global edit scope
+- **Double-click**: return to file browser to load a new sample
 
 ### Knob Touch
 
