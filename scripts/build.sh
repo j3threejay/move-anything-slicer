@@ -43,9 +43,10 @@ $CC \
     -lm \
     -o dist/slicer/dsp.so
 
-echo "==> Copying module.json and ui_chain.js ..."
+echo "==> Copying module.json, ui_chain.js, and help.json ..."
 cp module.json dist/slicer/
 cp ui_chain.js dist/slicer/
+[ -f help.json ] && cp help.json dist/slicer/
 
 # Create tarball
 echo "==> Creating tarball ..."

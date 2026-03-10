@@ -2,6 +2,8 @@
   "id": "slicer",
   "name": "Sample Slicer",
   "abbrev": "SL",
+  "description": "Transient-detection sample slicer with per-pad envelopes and loop modes",
+  "author": "j3threejay",
   "version": "0.1.0",
   "dsp": "dsp.so",
   "api_version": 2,

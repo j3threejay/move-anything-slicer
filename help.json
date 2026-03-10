@@ -1,0 +1,100 @@
+{
+  "title": "Sample Slicer",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Transient-detection",
+        "sample slicer.",
+        "",
+        "Load a WAV file,",
+        "detect transients,",
+        "play slices via",
+        "pads or keyboard."
+      ]
+    },
+    {
+      "title": "Quick Start",
+      "lines": [
+        "1. Browse & select",
+        "   a WAV sample",
+        "2. Adjust threshold",
+        "   with jog wheel",
+        "3. Click jog to scan",
+        "4. Hit pads to play",
+        "   slices"
+      ]
+    },
+    {
+      "title": "Controls",
+      "children": [
+        {
+          "title": "Knobs 1-4 (Bank A)",
+          "lines": [
+            "Knob 1: Start trim",
+            "Knob 2: End trim",
+            "Knob 3: Attack",
+            "Knob 4: Decay",
+            "",
+            "Per-pad parameters",
+            "for selected slice."
+          ]
+        },
+        {
+          "title": "Knobs 5-8 (Bank B)",
+          "lines": [
+            "Knob 5: Mode",
+            " (gate/trigger)",
+            "Knob 6: Pitch",
+            " (+/-24 semitones)",
+            "Knob 7: Gain",
+            "Knob 8: Loop mode",
+            " (off/loop/pingpong)"
+          ]
+        },
+        {
+          "title": "Jog Wheel",
+          "lines": [
+            "Browser: scroll list",
+            "Main: adjust thresh",
+            "Click: scan/select",
+            "",
+            "In main view, click",
+            "opens sensitivity",
+            "adjustment screen."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "MIDI Mapping",
+      "lines": [
+        "Pads (68-99):",
+        " Slices 0-31 direct",
+        "",
+        "Keyboard (C2 root):",
+        " Note 36+ chromatic",
+        " Up to 91 slices",
+        "",
+        "Velocity sensitive",
+        "when enabled."
+      ]
+    },
+    {
+      "title": "Modes",
+      "lines": [
+        "Gate: plays while",
+        " pad held, decay",
+        " on release",
+        "",
+        "Trigger: plays full",
+        " slice regardless",
+        " of pad hold time",
+        "",
+        "Loop: forward or",
+        " ping-pong looping",
+        " within slice bounds"
+      ]
+    }
+  ]
+}

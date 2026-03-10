@@ -54,8 +54,8 @@ typedef struct {
     int       loop_mode;     /* per-voice snapshot of pad's loop_mode */
     env_state_t env_state;
     float     env_val;
-    float     env_attack;    /* coeff per sample (used for decay ramp — see swap note) */
-    float     env_decay;     /* coeff per sample (used for attack ramp — see swap note) */
+    float     env_attack;    /* attack coefficient per sample */
+    float     env_decay;     /* decay coefficient per sample */
     float     velocity;      /* velocity gain: vel/127 when sens on, 1.0 when off */
     float     pad_gain;      /* per-pad gain snapshot */
     int       release;       /* countdown for end-of-slice fade-out */
@@ -370,9 +370,6 @@ static void voice_start(slicer_t *s, int note, int velocity) {
     if (s->slice_count_actual == 0 || !s->sample_data) return;
 
     int slice_idx = note_to_slice(s, note);
-    fprintf(stderr, "[slicer] note=%d -> slice=%d (count=%d)%s\n",
-            note, slice_idx, s->slice_count_actual,
-            slice_idx < 0 ? " IGNORED" : "");
     if (slice_idx < 0) return;  /* out of range — silent ignore */
 
     s->selected_slice = slice_idx;
@@ -404,12 +401,8 @@ static void voice_start(slicer_t *s, int note, int velocity) {
     v->loop_mode   = p->loop_mode;
     v->env_state   = ENV_ATTACK;
     v->env_val     = 0.0f;
-    /* NOTE: attack/decay coefficients are intentionally swapped here —
-       the render loop uses env_decay for the attack ramp and env_attack
-       for the decay ramp. This matches the hardware behavior after the
-       coefficient-swap bug fix. */
-    v->env_attack  = ms_to_coeff(p->decay_ms,  0.001f);
-    v->env_decay   = ms_to_coeff(p->attack_ms, 0.001f);
+    v->env_attack  = ms_to_coeff(p->attack_ms, 0.001f);
+    v->env_decay   = ms_to_coeff(p->decay_ms,  0.001f);
     v->velocity    = s->velocity_sens ? (velocity / 127.0f) : 1.0f;
     v->pad_gain    = p->gain;
     v->release     = 0;
@@ -677,11 +670,27 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "slice_gain") == 0)         return snprintf(buf, buf_len, "%.3f", p->gain);
     if (strcmp(key, "slice_loop") == 0)         return snprintf(buf, buf_len, "%d",   p->loop_mode);
 
-    /* Shadow UI param metadata */
+    /* Shadow UI param metadata — expose all key params for knob editing */
     if (strcmp(key, "chain_params") == 0) {
         const char *json =
-            "[{\"key\":\"velocity_sens\",\"name\":\"Velocity\","
-            "\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":1}]";
+            "["
+            "{\"key\":\"threshold\",\"name\":\"Sensitivity\","
+             "\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.5},"
+            "{\"key\":\"slices\",\"name\":\"Slices\","
+             "\"type\":\"enum\",\"options\":[\"8\",\"16\",\"32\",\"64\"],\"default\":\"16\"},"
+            "{\"key\":\"pitch\",\"name\":\"Pitch\","
+             "\"type\":\"float\",\"min\":-24.0,\"max\":24.0,\"default\":0.0},"
+            "{\"key\":\"velocity_sens\",\"name\":\"Velocity\","
+             "\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":\"On\"},"
+            "{\"key\":\"mode\",\"name\":\"Mode\","
+             "\"type\":\"enum\",\"options\":[\"trigger\",\"gate\"],\"default\":\"gate\"},"
+            "{\"key\":\"slice_attack\",\"name\":\"Attack\","
+             "\"type\":\"float\",\"min\":5.0,\"max\":500.0,\"default\":5.0},"
+            "{\"key\":\"slice_decay\",\"name\":\"Decay\","
+             "\"type\":\"float\",\"min\":0.0,\"max\":5000.0,\"default\":500.0},"
+            "{\"key\":\"slice_gain\",\"name\":\"Gain\","
+             "\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.8}"
+            "]";
         int len = (int)strlen(json);
         if (len < buf_len) { memcpy(buf, json, (size_t)len + 1); return len; }
         return -1;
@@ -803,7 +812,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
             float env = v->env_val;
             switch (v->env_state) {
                 case ENV_ATTACK:
-                    env = env + (1.0f - env) * (1.0f - v->env_decay);
+                    env = env + (1.0f - env) * (1.0f - v->env_attack);
                     if (env >= 0.999f) {
                         env = 1.0f;
                         if (v->loop_mode != LOOP_OFF || s->mode_gate)
@@ -816,7 +825,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
                     env = 1.0f;
                     break;
                 case ENV_DECAY:
-                    env *= v->env_attack;
+                    env *= v->env_decay;
                     if (env < 0.0001f) {
                         env = 0.0f;
                         v->env_state = ENV_IDLE;
@@ -860,11 +869,17 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
                 }
             }
 
-            /* linear interpolation */
+            /* linear interpolation — clamp to valid sample range */
             float frac       = (uint32_t)(v->pos & 0xFFFF) / 65536.0f;
             int32_t pos_next = pos_int + v->direction;
             if (pos_next >= v->slice_end)   pos_next = pos_int;
             if (pos_next < v->slice_start)  pos_next = pos_int;
+
+            /* guard against out-of-bounds sample access */
+            if (pos_int < 0 || pos_int >= s->sample_frames ||
+                pos_next < 0 || pos_next >= s->sample_frames) {
+                v->active = 0; v->env_val = 0.0f; break;
+            }
 
             float l = s->sample_data[pos_int*2]   * (1.0f - frac)
                     + s->sample_data[pos_next*2]   * frac;

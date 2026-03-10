@@ -29,6 +29,11 @@ scp $SSH_OPTS "$DIST_DIR/module.json" "ableton@${MOVE_HOST}:${DEST}/module.json"
 echo "==> Copying ui_chain.js ..."
 scp $SSH_OPTS "$DIST_DIR/ui_chain.js" "ableton@${MOVE_HOST}:${DEST}/ui_chain.js"
 
+if [[ -f "$DIST_DIR/help.json" ]]; then
+    echo "==> Copying help.json ..."
+    scp $SSH_OPTS "$DIST_DIR/help.json" "ableton@${MOVE_HOST}:${DEST}/help.json"
+fi
+
 echo "==> Restarting Move service ..."
 ssh $SSH_OPTS "root@${MOVE_HOST}" "/etc/init.d/move stop; sleep 1; /etc/init.d/move start"
 
