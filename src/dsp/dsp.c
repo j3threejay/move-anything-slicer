@@ -57,7 +57,8 @@ typedef struct {
     float     env_attack;    /* attack coefficient per sample */
     float     env_decay;     /* decay coefficient per sample */
     float     velocity;      /* velocity gain: vel/127 when sens on, 1.0 when off */
-    float     pad_gain;      /* per-pad gain snapshot */
+    float     pad_gain;      /* effective gain: global * per-pad */
+    int       mode_gate;     /* per-voice snapshot of effective mode */
     int       release;       /* countdown for end-of-slice fade-out */
     int       released;      /* note has been released (gate/loop mode) */
 } voice_t;
@@ -68,7 +69,9 @@ typedef struct {
     float  end_offset_ms;    /* offset from detected slice end, ± ms */
     float  attack_ms;
     float  decay_ms;
-    float  gain;             /* 0.0–1.0 */
+    float  gain;             /* per-pad gain multiplier (0.0–2.0, default 1.0) */
+    float  pitch_offset;     /* per-pad pitch offset in semitones (default 0) */
+    int    mode_override;    /* -1=follow global, 0=trigger, 1=gate */
     int    loop_mode;        /* LOOP_OFF / LOOP_FORWARD / LOOP_PINGPONG */
 } pad_params_t;
 
@@ -87,8 +90,9 @@ typedef struct {
     /* global params */
     float     threshold;
     int       slice_count;   /* fallback chunk count: 8/16/32/64 */
-    float     pitch;         /* semitones ±24 */
-    int       mode_gate;     /* 0=trigger, 1=gate */
+    float     pitch;         /* global pitch in semitones ±24 */
+    float     global_gain;   /* global gain 0.0–1.0 (default 0.8) */
+    int       mode_gate;     /* global mode: 0=trigger, 1=gate */
     int       velocity_sens; /* 0=off (fixed gain 1.0), 1=on (vel/127) */
 
     /* per-pad params */
@@ -140,7 +144,9 @@ static void reset_pad(pad_params_t *p) {
     p->end_offset_ms   = 0.0f;
     p->attack_ms       = 5.0f;
     p->decay_ms        = 500.0f;
-    p->gain            = 0.8f;
+    p->gain            = 1.0f;          /* multiplier on global_gain */
+    p->pitch_offset    = 0.0f;
+    p->mode_override   = -1;            /* -1 = follow global */
     p->loop_mode       = LOOP_OFF;
 }
 
@@ -394,17 +400,18 @@ static void voice_start(slicer_t *s, int note, int velocity) {
     v->note        = note;
     v->slice_idx   = slice_idx;
     v->pos         = (int64_t)start << 16;
-    v->rate        = semitones_to_rate(s->pitch);
+    v->rate        = semitones_to_rate(s->pitch + p->pitch_offset);
     v->direction   = 1;
     v->slice_start = start;
     v->slice_end   = end;
     v->loop_mode   = p->loop_mode;
+    v->mode_gate   = (p->mode_override >= 0) ? p->mode_override : s->mode_gate;
     v->env_state   = ENV_ATTACK;
     v->env_val     = 0.0f;
     v->env_attack  = ms_to_coeff(p->attack_ms, 0.001f);
     v->env_decay   = ms_to_coeff(p->decay_ms,  0.001f);
     v->velocity    = s->velocity_sens ? (velocity / 127.0f) : 1.0f;
-    v->pad_gain    = p->gain;
+    v->pad_gain    = s->global_gain * p->gain;
     v->release     = 0;
     v->released    = 0;
 }
@@ -472,6 +479,7 @@ static void* v2_create_instance(const char *module_dir, const char *json_default
     s->threshold      = 0.5f;
     s->slice_count    = 16;
     s->pitch          = 0.0f;
+    s->global_gain    = 0.8f;
     s->mode_gate      = 1;
     s->velocity_sens  = 1;
     s->selected_slice = 0;
@@ -521,6 +529,13 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         s->pads[s->selected_slice].decay_ms = atof(val);
     } else if (strcmp(key, "slice_gain") == 0) {
         s->pads[s->selected_slice].gain = atof(val);
+    } else if (strcmp(key, "slice_pitch") == 0) {
+        s->pads[s->selected_slice].pitch_offset = atof(val);
+    } else if (strcmp(key, "slice_mode") == 0) {
+        int n = atoi(val);
+        if (n >= -1 && n <= 1) s->pads[s->selected_slice].mode_override = n;
+    } else if (strcmp(key, "global_gain") == 0) {
+        s->global_gain = atof(val);
     } else if (strcmp(key, "slice_loop") == 0) {
         int n = atoi(val);
         if (n >= LOOP_OFF && n <= LOOP_PINGPONG)
@@ -562,6 +577,9 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         if (json_get_string(val, "mode", str, sizeof(str)))
             s->mode_gate = (strcmp(str, "gate") == 0) ? 1 : 0;
         if (json_get_int(val, "vel_sens", &ival)) s->velocity_sens = ival ? 1 : 0;
+        /* global_gain: if absent (old save), use 1.0 so old per-pad gains work */
+        if (json_get_float(val, "gg", &fval)) s->global_gain = fval;
+        else s->global_gain = 1.0f;
 
         /* Load sample from saved path */
         if (json_get_string(val, "sample_path", str, sizeof(str)) && str[0]) {
@@ -632,6 +650,21 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
                     const char *c = strchr(p, ','); if (!c) break; p = c + 1;
                 }
             }
+            if (json_get_string(val, "pp", csv, sizeof(csv))) {
+                const char *p = csv;
+                for (int i = 0; i < n && *p; i++) {
+                    s->pads[i].pitch_offset = (float)atof(p);
+                    const char *c = strchr(p, ','); if (!c) break; p = c + 1;
+                }
+            }
+            if (json_get_string(val, "pm", csv, sizeof(csv))) {
+                const char *p = csv;
+                for (int i = 0; i < n && *p; i++) {
+                    int mo = atoi(p);
+                    if (mo >= -1 && mo <= 1) s->pads[i].mode_override = mo;
+                    const char *c = strchr(p, ','); if (!c) break; p = c + 1;
+                }
+            }
 
             s->preview_slice_count = n;
         }
@@ -668,6 +701,9 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "slice_attack") == 0)       return snprintf(buf, buf_len, "%.1f", p->attack_ms);
     if (strcmp(key, "slice_decay") == 0)        return snprintf(buf, buf_len, "%.1f", p->decay_ms);
     if (strcmp(key, "slice_gain") == 0)         return snprintf(buf, buf_len, "%.3f", p->gain);
+    if (strcmp(key, "slice_pitch") == 0)        return snprintf(buf, buf_len, "%.1f", p->pitch_offset);
+    if (strcmp(key, "slice_mode") == 0)         return snprintf(buf, buf_len, "%d",   p->mode_override);
+    if (strcmp(key, "global_gain") == 0)        return snprintf(buf, buf_len, "%.3f", s->global_gain);
     if (strcmp(key, "slice_loop") == 0)         return snprintf(buf, buf_len, "%d",   p->loop_mode);
 
     /* Shadow UI param metadata — expose all key params for knob editing */
@@ -684,12 +720,12 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
              "\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":\"On\"},"
             "{\"key\":\"mode\",\"name\":\"Mode\","
              "\"type\":\"enum\",\"options\":[\"trigger\",\"gate\"],\"default\":\"gate\"},"
+            "{\"key\":\"global_gain\",\"name\":\"Gain\","
+             "\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.8},"
             "{\"key\":\"slice_attack\",\"name\":\"Attack\","
              "\"type\":\"float\",\"min\":5.0,\"max\":500.0,\"default\":5.0},"
             "{\"key\":\"slice_decay\",\"name\":\"Decay\","
-             "\"type\":\"float\",\"min\":0.0,\"max\":5000.0,\"default\":500.0},"
-            "{\"key\":\"slice_gain\",\"name\":\"Gain\","
-             "\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.8}"
+             "\"type\":\"float\",\"min\":0.0,\"max\":5000.0,\"default\":500.0}"
             "]";
         int len = (int)strlen(json);
         if (len < buf_len) { memcpy(buf, json, (size_t)len + 1); return len; }
@@ -704,11 +740,11 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
 
         pos += snprintf(tmp + pos, sizeof(tmp) - pos,
             "{\"threshold\":%.3f,\"slices\":%d,\"pitch\":%.1f,"
-            "\"mode\":\"%s\",\"vel_sens\":%d,"
+            "\"mode\":\"%s\",\"vel_sens\":%d,\"gg\":%.3f,"
             "\"sample_path\":\"%s\",\"sca\":%d",
             s->threshold, s->slice_count, s->pitch,
             s->mode_gate ? "gate" : "trigger",
-            s->velocity_sens, s->sample_path, n);
+            s->velocity_sens, s->global_gain, s->sample_path, n);
 
         if (n > 0 && pos < (int)sizeof(tmp) - 64) {
             /* slice_points: n+1 values */
@@ -759,6 +795,20 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
                 pos += snprintf(tmp + pos, sizeof(tmp) - pos, "%s%d",
                                 i ? "," : "", s->pads[i].loop_mode);
             pos += snprintf(tmp + pos, sizeof(tmp) - pos, "\"");
+
+            /* per-pad pitch offset */
+            pos += snprintf(tmp + pos, sizeof(tmp) - pos, ",\"pp\":\"");
+            for (int i = 0; i < n && pos < (int)sizeof(tmp) - 16; i++)
+                pos += snprintf(tmp + pos, sizeof(tmp) - pos, "%s%.1f",
+                                i ? "," : "", s->pads[i].pitch_offset);
+            pos += snprintf(tmp + pos, sizeof(tmp) - pos, "\"");
+
+            /* per-pad mode override */
+            pos += snprintf(tmp + pos, sizeof(tmp) - pos, ",\"pm\":\"");
+            for (int i = 0; i < n && pos < (int)sizeof(tmp) - 16; i++)
+                pos += snprintf(tmp + pos, sizeof(tmp) - pos, "%s%d",
+                                i ? "," : "", s->pads[i].mode_override);
+            pos += snprintf(tmp + pos, sizeof(tmp) - pos, "\"");
         }
 
         pos += snprintf(tmp + pos, sizeof(tmp) - pos, "}");
@@ -787,7 +837,7 @@ static void v2_on_midi(void *inst, const uint8_t *msg, int len, int source) {
            Loop voices in trigger mode also need note-off to exit the loop.
            Non-looping trigger voices ignore note-off — slice plays to end. */
         voice_t *v = find_voice_for_note(s, note);
-        if (v && (s->mode_gate || v->loop_mode != LOOP_OFF)) {
+        if (v && (v->mode_gate || v->loop_mode != LOOP_OFF)) {
             voice_release(v);
         }
     }
@@ -815,7 +865,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
                     env = env + (1.0f - env) * (1.0f - v->env_attack);
                     if (env >= 0.999f) {
                         env = 1.0f;
-                        if (v->loop_mode != LOOP_OFF || s->mode_gate)
+                        if (v->loop_mode != LOOP_OFF || v->mode_gate)
                             v->env_state = ENV_SUSTAIN;
                         else
                             v->env_state = ENV_DECAY;

@@ -7,7 +7,7 @@
  *   Jog touch  = CC9  (capacitive, NOT the click)
  *   Knobs 1-8  = CC71-78
  *   Pads       = Notes 68-99
- *   Knob touch = Notes 0-7 — eaten by chain/ui.js before reaching here
+ *   Knob touch = Notes 0-7 — reach chain UI (confirmed), used for bank switching
  *
  * Note → slice mapping (mirrors DSP):
  *   Move pads (notes 68-99): slice_idx = note - 68  (0-31, direct pad mapping)
@@ -45,7 +45,7 @@ function noteName(n) {
 /* per-pad param cache — mirrors DSP pads[] array */
 const padState = [];
 for (let i = 0; i < MAX_SLICES; i++) {
-    padState.push({ startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 0.8, loop: 0 });
+    padState.push({ startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 1.0, pitchOffset: 0.0, modeOverride: -1, loop: 0 });
 }
 
 const s = {
@@ -56,7 +56,9 @@ const s = {
     samplePath:       '',
     threshold:        0.5,
     pitch:            0.0,
+    globalGain:       0.8,
     mode:             'gate',
+    editScope:        'G',       /* 'G'=global, 'P'=per-pad (Bank B toggle) */
     sliceCountActual: 0,
     slicerState:      0,
     selectedSlice:    0,
@@ -80,6 +82,7 @@ function syncGlobal() {
     s.samplePath       = gp('sample_path', '');
     s.threshold        = parseFloat(gp('threshold', 0.5));
     s.pitch            = parseFloat(gp('pitch', 0.0));
+    s.globalGain       = parseFloat(gp('global_gain', 0.8));
     s.mode             = gp('mode', 'gate');
     s.sliceCountActual = parseInt(gp('slice_count_actual', 0));
     s.slicerState      = parseInt(gp('slicer_state', 0));
@@ -88,7 +91,7 @@ function syncGlobal() {
 
 function resetPadState() {
     for (let i = 0; i < MAX_SLICES; i++) {
-        padState[i] = { startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 0.8, loop: 0 };
+        padState[i] = { startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 1.0, pitchOffset: 0.0, modeOverride: -1, loop: 0 };
     }
 }
 
@@ -164,10 +167,15 @@ function adjustStartTrim(d) { pad().startTrim += d*5;                           
 function adjustEndTrim(d)   { pad().endTrim   += d*5;                                          sp('slice_end_trim',   pad().endTrim.toFixed(1));   s.dirty=true; }
 function adjustAttack(d)    { pad().attack = Math.max(5,Math.min(500,  pad().attack+d*5));     sp('slice_attack',     pad().attack.toFixed(1));    s.dirty=true; }
 function adjustDecay(d)     { pad().decay  = Math.max(0,Math.min(5000, pad().decay+d*20));     sp('slice_decay',      pad().decay.toFixed(1));     s.dirty=true; }
-function adjustGain(d)      { pad().gain   = Math.max(0,Math.min(1,    pad().gain+d*0.05));    sp('slice_gain',       pad().gain.toFixed(3));      s.dirty=true; }
 function adjustLoop(d)      { pad().loop   = Math.max(0,Math.min(2,    pad().loop+(d>0?1:-1)));sp('slice_loop',       String(pad().loop));          s.dirty=true; }
+/* global adjusters */
 function adjustMode(d)      { s.mode = s.mode==='trigger'?'gate':'trigger'; sp('mode',s.mode); s.dirty=true; }
 function adjustPitch(d)     { s.pitch = Math.max(-24,Math.min(24,s.pitch+d*0.5)); sp('pitch',s.pitch.toFixed(1)); s.dirty=true; }
+function adjustGlobalGain(d){ s.globalGain = Math.max(0,Math.min(1,s.globalGain+d*0.05)); sp('global_gain',s.globalGain.toFixed(3)); s.dirty=true; }
+/* per-pad adjusters */
+function adjustPadGain(d)   { pad().gain = Math.max(0,Math.min(2,pad().gain+d*0.05)); sp('slice_gain',pad().gain.toFixed(3)); s.dirty=true; }
+function adjustPadPitch(d)  { pad().pitchOffset = Math.max(-24,Math.min(24,pad().pitchOffset+d*0.5)); sp('slice_pitch',pad().pitchOffset.toFixed(1)); s.dirty=true; }
+function adjustPadMode(d)   { const m = pad().modeOverride; pad().modeOverride = m >= 1 ? -1 : m + 1; sp('slice_mode',String(pad().modeOverride)); s.dirty=true; }
 function adjustThreshold(d) { s.threshold=Math.max(0,Math.min(1,s.threshold+d*0.05)); sp('threshold',s.threshold.toFixed(3)); s.slicerState=0; s.dirty=true; }
 function triggerScan()      { resetPadState(); sp('scan','1'); }
 
@@ -200,6 +208,7 @@ function drawScanFlash() {
     print(0, 20, 'Detected:', 1);
     print(0, 32, s.sliceCountActual + ' slices', 1);
 }
+const MODE_LABELS = { '-1': '---', '0': 'TRIG', '1': 'GATE' };
 function drawBankA() {
     const p = pad();
     clear_screen(); drawSampleName();
@@ -212,10 +221,19 @@ function drawBankA() {
 function drawBankB() {
     const p = pad();
     clear_screen(); drawSampleName();
-    print(0, 13, 'Mode:'+s.mode.toUpperCase(), 1);
-    print(0, 23, 'Pitch:'+fmtPitch(s.pitch), 1);
-    print(0, 33, 'Gain:'+Math.round(p.gain*100)+'%', 1);
-    print(0, 43, 'Loop:'+LOOP_LABELS[p.loop], 1);
+    if (s.editScope === 'G') {
+        print(0, 13, '[G] Mode:'+s.mode.toUpperCase(), 1);
+        print(0, 23, 'Pitch:'+fmtPitch(s.pitch), 1);
+        print(0, 33, 'Gain:'+Math.round(s.globalGain*100)+'%', 1);
+        print(0, 43, 'Loop:'+LOOP_LABELS[p.loop], 1);
+        print(0, 53, 'Jog: Global Edit', 1);
+    } else {
+        print(0, 13, '[P] Pad '+(s.selectedSlice+1), 1);
+        print(0, 23, 'Mode:'+MODE_LABELS[String(p.modeOverride)], 1);
+        print(0, 33, 'Pitch:'+fmtPitch(p.pitchOffset), 1);
+        print(0, 43, 'Gain:x'+Math.round(p.gain*100)+'%', 1);
+        print(0, 53, 'Jog: Per-Pad Edit', 1);
+    }
 }
 function drawBrowser() {
     clear_screen();
@@ -247,7 +265,6 @@ function tick() {
         const dspSlice = parseInt(gp('selected_slice', s.selectedSlice));
         if (dspSlice >= 0 && dspSlice < s.sliceCountActual && dspSlice !== s.selectedSlice) {
             s.selectedSlice = dspSlice;
-            s.knobBank = 'A';
             s.dirty = true;
         }
     }
@@ -274,13 +291,22 @@ function onMidiMessageInternal(data) {
     const byte1  = data[1];
     const byte2  = data[2];
 
+    /* Knob touch (capacitive) — notes 0-7, switch bank display on touch */
+    if (status === 0x90 && byte1 <= 7) {
+        if (byte2 > 0 && s.view === 'main' && s.slicerState === 1) {
+            const newBank = byte1 <= 3 ? 'A' : 'B';
+            if (s.knobBank !== newBank) { s.knobBank = newBank; s.dirty = true; }
+        }
+        return;
+    }
+
     /* Pad hit — notes 68-99, slice_idx = note - 68 (0-31, matches DSP pad mapping) */
     if (status === 0x90 && byte2 > 0 && byte1 >= 68 && byte1 <= 99) {
         if (s.slicerState === 1) {
             const slice = byte1 - 68;
             if (slice >= s.sliceCountActual) return;  /* pad out of range for this scan */
             if (slice !== s.selectedSlice) selectSlice(slice);
-            s.knobBank = 'A'; s.dirty = true;
+            s.dirty = true;
             if (s.view !== 'main') { s.view = 'main'; }
         }
         return;
@@ -304,6 +330,12 @@ function onMidiMessageInternal(data) {
         if (s.view === 'browser')     { browserSelect(); return; }
         if (s.view === 'sensitivity') { triggerScan(); s.view = 'main'; s.dirty = true; return; }
         if (s.slicerState !== 1)      { triggerScan(); return; }
+        /* In Bank B: toggle global/per-pad scope; in Bank A: open sensitivity */
+        if (s.knobBank === 'B') {
+            s.editScope = s.editScope === 'G' ? 'P' : 'G';
+            s.dirty = true;
+            return;
+        }
         s.view = 'sensitivity'; s.dirty = true;
         return;
     }
@@ -320,14 +352,22 @@ function onMidiMessageInternal(data) {
         return;
     }
 
-    /* Knobs 5-8: bank B (global) */
+    /* Knobs 5-8: bank B (global or per-pad based on editScope) */
     if (cc===MoveKnob5||cc===MoveKnob6||cc===MoveKnob7||cc===MoveKnob8) {
         s.knobBank='B'; s.dirty=true;
+        if (s.slicerState!==1) return;
         const d=decodeDelta(val);
-        if (cc===MoveKnob5) adjustMode(d);
-        if (cc===MoveKnob6) adjustPitch(d);
-        if (cc===MoveKnob7&&s.slicerState===1) adjustGain(d);
-        if (cc===MoveKnob8&&s.slicerState===1) adjustLoop(d);
+        if (s.editScope === 'G') {
+            if (cc===MoveKnob5) adjustMode(d);
+            if (cc===MoveKnob6) adjustPitch(d);
+            if (cc===MoveKnob7) adjustGlobalGain(d);
+            if (cc===MoveKnob8) adjustLoop(d);
+        } else {
+            if (cc===MoveKnob5) adjustPadMode(d);
+            if (cc===MoveKnob6) adjustPadPitch(d);
+            if (cc===MoveKnob7) adjustPadGain(d);
+            if (cc===MoveKnob8) adjustLoop(d);
+        }
         return;
     }
 }

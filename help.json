@@ -43,13 +43,20 @@
         {
           "title": "Knobs 5-8 (Bank B)",
           "lines": [
-            "Knob 5: Mode",
-            " (gate/trigger)",
-            "Knob 6: Pitch",
-            " (+/-24 semitones)",
-            "Knob 7: Gain",
-            "Knob 8: Loop mode",
-            " (off/loop/pingpong)"
+            "Global [G] mode:",
+            " K5: Mode (gate/trig)",
+            " K6: Pitch (+/-24st)",
+            " K7: Gain (global)",
+            " K8: Loop mode",
+            "",
+            "Per-Pad [P] mode:",
+            " K5: Pad mode override",
+            " K6: Pad pitch offset",
+            " K7: Pad gain (mult)",
+            " K8: Loop mode",
+            "",
+            "Jog click in Bank B",
+            "toggles [G] / [P]."
           ]
         },
         {
@@ -59,9 +66,22 @@
             "Main: adjust thresh",
             "Click: scan/select",
             "",
-            "In main view, click",
-            "opens sensitivity",
-            "adjustment screen."
+            "Bank A: click opens",
+            " sensitivity screen.",
+            "Bank B: click toggles",
+            " Global/Per-Pad edit."
+          ]
+        },
+        {
+          "title": "Knob Touch",
+          "lines": [
+            "Touch knobs 1-4 to",
+            "show Bank A display.",
+            "Touch knobs 5-8 to",
+            "show Bank B display.",
+            "",
+            "Display persists",
+            "across pad presses."
           ]
         }
       ]
