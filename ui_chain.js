@@ -169,7 +169,7 @@ function fmtPitch(v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + 'st'; }
 /* param adjusters — update local padState AND write to DSP */
 function adjustStartTrim(d) { pad().startTrim += d*5;                                          sp('slice_start_trim', pad().startTrim.toFixed(1)); s.dirty=true; }
 function adjustEndTrim(d)   { pad().endTrim   += d*5;                                          sp('slice_end_trim',   pad().endTrim.toFixed(1));   s.dirty=true; }
-function adjustAttack(d)    { pad().attack = Math.max(5,Math.min(500,  pad().attack+d*5));     sp('slice_attack',     pad().attack.toFixed(1));    s.dirty=true; }
+function adjustAttack(d)    { pad().attack = Math.max(5,Math.min(2000, pad().attack+d*5));     sp('slice_attack',     pad().attack.toFixed(1));    s.dirty=true; }
 function adjustDecay(d)     { pad().decay  = Math.max(0,Math.min(5000, pad().decay+d*20));     sp('slice_decay',      pad().decay.toFixed(1));     s.dirty=true; }
 function adjustLoop(d)      { pad().loop   = Math.max(0,Math.min(2,    pad().loop+(d>0?1:-1)));sp('slice_loop',       String(pad().loop));          s.dirty=true; }
 /* global adjusters */
@@ -177,7 +177,7 @@ function adjustMode(d)      { s.mode = s.mode==='trigger'?'gate':'trigger'; sp('
 function adjustPitch(d)     { s.pitch = Math.max(-24,Math.min(24,s.pitch+d*0.5)); sp('pitch',s.pitch.toFixed(1)); s.dirty=true; }
 function adjustGlobalGain(d){ s.globalGain = Math.max(0,Math.min(1,s.globalGain+d*0.05)); sp('global_gain',s.globalGain.toFixed(3)); s.dirty=true; }
 function adjustGlobalAttack(d) {
-    s.globalAttack = Math.max(5,Math.min(500,s.globalAttack+d*5));
+    s.globalAttack = Math.max(5,Math.min(2000,s.globalAttack+d*5));
     sp('global_attack',s.globalAttack.toFixed(1));
     for (let i = 0; i < MAX_SLICES; i++) padState[i].attack = s.globalAttack;
     s.dirty=true;
