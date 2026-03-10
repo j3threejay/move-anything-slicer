@@ -4,7 +4,7 @@
   "abbrev": "SL",
   "description": "Transient-detection sample slicer with per-pad envelopes and loop modes",
   "author": "j3threejay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "dsp": "dsp.so",
   "api_version": 2,
   "capabilities": {
