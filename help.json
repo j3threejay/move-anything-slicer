@@ -31,32 +31,38 @@
         {
           "title": "Knobs 1-4 (Bank A)",
           "lines": [
-            "Knob 1: Start trim",
-            "Knob 2: End trim",
-            "Knob 3: Attack",
-            "Knob 4: Decay",
+            "Per-Pad [P] default:",
+            " K1: Attack",
+            " K2: Decay",
+            " K3: Start trim",
+            " K4: End trim",
             "",
-            "Per-pad parameters",
-            "for selected slice."
+            "Global [G] mode:",
+            " K1: Attack (all)",
+            " K2: Decay (all)",
+            " K3-K4: inactive",
+            "",
+            "Jog click toggles",
+            "[P] / [G] scope."
           ]
         },
         {
           "title": "Knobs 5-8 (Bank B)",
           "lines": [
+            "Per-Pad [P] default:",
+            " K5: Mode (gate/trig)",
+            " K6: Pitch offset",
+            " K7: Pad gain (mult)",
+            " K8: Loop mode",
+            "",
             "Global [G] mode:",
             " K5: Mode (gate/trig)",
             " K6: Pitch (+/-24st)",
             " K7: Gain (global)",
             " K8: Loop mode",
             "",
-            "Per-Pad [P] mode:",
-            " K5: Pad mode override",
-            " K6: Pad pitch offset",
-            " K7: Pad gain (mult)",
-            " K8: Loop mode",
-            "",
-            "Jog click in Bank B",
-            "toggles [G] / [P]."
+            "Jog click toggles",
+            "[P] / [G] scope."
           ]
         },
         {
@@ -66,10 +72,9 @@
             "Main: adjust thresh",
             "Click: scan/select",
             "",
-            "Bank A: click opens",
-            " sensitivity screen.",
-            "Bank B: click toggles",
-            " Global/Per-Pad edit."
+            "Ready: click toggles",
+            " Per-Pad / Global",
+            " edit scope."
           ]
         },
         {
@@ -94,10 +99,7 @@
         "",
         "Keyboard (C2 root):",
         " Note 36+ chromatic",
-        " Up to 91 slices",
-        "",
-        "Velocity sensitive",
-        "when enabled."
+        " Up to 91 slices"
       ]
     },
     {

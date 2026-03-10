@@ -20,22 +20,42 @@ keyboard with per-pad envelopes, pitch, gain, and loop modes.
 
 ## Controls
 
-### Bank A - Knobs 1-4 (Per-Pad Envelope)
+Both banks have two edit scopes, toggled by **clicking jog**: Per-Pad [P]
+(default) and Global [G]. The display shows `[P]` or `[G]` to indicate the
+current scope.
+
+### Bank A - Knobs 1-4 (Envelope & Trim)
+
+**Per-Pad [P]** (default):
 
 | Knob | Parameter | Range |
 |------|-----------|-------|
-| 1 | Start trim | offset from slice start (ms) |
-| 2 | End trim | offset from slice end (ms) |
-| 3 | Attack | 5 - 500 ms |
-| 4 | Decay | 0 - 5000 ms |
+| 1 | Attack | 5 - 500 ms |
+| 2 | Decay | 0 - 5000 ms |
+| 3 | Start trim | offset from slice start (ms) |
+| 4 | End trim | offset from slice end (ms) |
 
-These are always per-pad - each pad stores its own envelope settings.
+**Global [G]**:
 
-### Bank B - Knobs 5-8 (Global or Per-Pad)
+| Knob | Parameter | Range |
+|------|-----------|-------|
+| 1 | Attack (all pads) | 5 - 500 ms |
+| 2 | Decay (all pads) | 0 - 5000 ms |
+| 3 | — | inactive |
+| 4 | — | inactive |
 
-Bank B has two edit scopes, toggled by **clicking jog** while in Bank B:
+### Bank B - Knobs 5-8 (Mode, Pitch, Gain, Loop)
 
-**Global [G]** (default):
+**Per-Pad [P]** (default):
+
+| Knob | Parameter | Range |
+|------|-----------|-------|
+| 5 | Mode | GATE / TRIG |
+| 6 | Pitch offset | -24 to +24 semitones (added to global) |
+| 7 | Gain multiplier | 0 - 200% (multiplied by global gain) |
+| 8 | Loop mode | off / loop / ping-pong |
+
+**Global [G]**:
 
 | Knob | Parameter | Range |
 |------|-----------|-------|
@@ -44,22 +64,11 @@ Bank B has two edit scopes, toggled by **clicking jog** while in Bank B:
 | 7 | Gain | 0 - 100% (master volume) |
 | 8 | Loop mode | off / loop / ping-pong |
 
-**Per-Pad [P]** (click jog in Bank B to switch):
-
-| Knob | Parameter | Range |
-|------|-----------|-------|
-| 5 | Mode override | --- (follow global) / TRIG / GATE |
-| 6 | Pitch offset | -24 to +24 semitones (added to global) |
-| 7 | Gain multiplier | 0 - 200% (multiplied by global gain) |
-| 8 | Loop mode | off / loop / ping-pong |
-
-The display shows `[G]` or `[P]` to indicate the current edit scope.
-
 ### Jog Wheel
 
 - **Turn**: scroll browser / adjust threshold
-- **Click (Bank A)**: open sensitivity screen / trigger scan
-- **Click (Bank B)**: toggle Global / Per-Pad edit scope
+- **Click (browser/idle)**: select sample / trigger scan
+- **Click (ready)**: toggle Per-Pad / Global edit scope
 
 ### Knob Touch
 
@@ -76,8 +85,7 @@ The display persists across pad presses.
 | **Gate** | Plays while pad is held. Decay envelope on release. |
 | **Trigger** | Plays full slice regardless of how long pad is held. |
 
-Per-pad mode override lets individual pads behave differently from the global
-setting. Set to `---` to follow the global mode.
+Per-pad mode lets individual pads behave differently from the global setting.
 
 ## Loop Modes
 
@@ -96,8 +104,6 @@ setting. Set to `---` to follow the global mode.
 | Pads | 68 - 99 | Slices 0 - 31 (direct) |
 | Keyboard | 36+ (C2 root) | Chromatic, up to 91 slices |
 
-Velocity sensitivity can be toggled on/off.
-
 ---
 
 ## Global vs Per-Pad Parameters
@@ -106,9 +112,10 @@ The slicer combines global and per-pad values at voice start:
 
 - **Pitch**: `global_pitch + pad_pitch_offset` (additive)
 - **Gain**: `global_gain * pad_gain` (multiplicative)
-- **Mode**: pad override wins if set, otherwise global mode applies
+- **Mode**: per-pad mode (GATE/TRIG toggle per pad)
+- **Attack/Decay**: global sets all pads; per-pad overrides individually
 
-This means you can set a global pitch/gain/mode and then fine-tune individual
+This means you can set a global pitch/gain and then fine-tune individual
 pads as needed.
 
 ---
