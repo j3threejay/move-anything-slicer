@@ -45,7 +45,7 @@ function noteName(n) {
 /* per-pad param cache — mirrors DSP pads[] array */
 const padState = [];
 for (let i = 0; i < MAX_SLICES; i++) {
-    padState.push({ startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 1.0, pitchOffset: 0.0, modeOverride: -1, loop: 0 });
+    padState.push({ startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 1.0, pitchOffset: 0.0, modeOverride: 1, loop: 0 });
 }
 
 const s = {
@@ -57,8 +57,11 @@ const s = {
     threshold:        0.5,
     pitch:            0.0,
     globalGain:       0.8,
+    globalAttack:     5.0,
+    globalDecay:      500.0,
+    velSens:          1,
     mode:             'gate',
-    editScope:        'G',       /* 'G'=global, 'P'=per-pad (Bank B toggle) */
+    editScope:        'G',       /* 'G'=global, 'P'=per-pad (jog click toggle) */
     sliceCountActual: 0,
     slicerState:      0,
     selectedSlice:    0,
@@ -84,6 +87,7 @@ function syncGlobal() {
     s.pitch            = parseFloat(gp('pitch', 0.0));
     s.globalGain       = parseFloat(gp('global_gain', 0.8));
     s.mode             = gp('mode', 'gate');
+    s.velSens          = parseInt(gp('velocity_sens', 1));
     s.sliceCountActual = parseInt(gp('slice_count_actual', 0));
     s.slicerState      = parseInt(gp('slicer_state', 0));
     s.sampleName       = s.samplePath ? s.samplePath.split('/').pop().replace(/\.wav$/i, '') : '';
@@ -91,7 +95,7 @@ function syncGlobal() {
 
 function resetPadState() {
     for (let i = 0; i < MAX_SLICES; i++) {
-        padState[i] = { startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 1.0, pitchOffset: 0.0, modeOverride: -1, loop: 0 };
+        padState[i] = { startTrim: 0.0, endTrim: 0.0, attack: 5.0, decay: 500.0, gain: 1.0, pitchOffset: 0.0, modeOverride: 1, loop: 0 };
     }
 }
 
@@ -172,11 +176,24 @@ function adjustLoop(d)      { pad().loop   = Math.max(0,Math.min(2,    pad().loo
 function adjustMode(d)      { s.mode = s.mode==='trigger'?'gate':'trigger'; sp('mode',s.mode); s.dirty=true; }
 function adjustPitch(d)     { s.pitch = Math.max(-24,Math.min(24,s.pitch+d*0.5)); sp('pitch',s.pitch.toFixed(1)); s.dirty=true; }
 function adjustGlobalGain(d){ s.globalGain = Math.max(0,Math.min(1,s.globalGain+d*0.05)); sp('global_gain',s.globalGain.toFixed(3)); s.dirty=true; }
+function adjustGlobalAttack(d) {
+    s.globalAttack = Math.max(5,Math.min(500,s.globalAttack+d*5));
+    sp('global_attack',s.globalAttack.toFixed(1));
+    for (let i = 0; i < MAX_SLICES; i++) padState[i].attack = s.globalAttack;
+    s.dirty=true;
+}
+function adjustGlobalDecay(d) {
+    s.globalDecay = Math.max(0,Math.min(5000,s.globalDecay+d*20));
+    sp('global_decay',s.globalDecay.toFixed(1));
+    for (let i = 0; i < MAX_SLICES; i++) padState[i].decay = s.globalDecay;
+    s.dirty=true;
+}
+function adjustVelSens(d)   { s.velSens = s.velSens ? 0 : 1; sp('velocity_sens',String(s.velSens)); s.dirty=true; }
+function adjustThreshold(d) { s.threshold=Math.max(0,Math.min(1,s.threshold+d*0.05)); sp('threshold',s.threshold.toFixed(3)); s.slicerState=0; s.dirty=true; }
 /* per-pad adjusters */
 function adjustPadGain(d)   { pad().gain = Math.max(0,Math.min(2,pad().gain+d*0.05)); sp('slice_gain',pad().gain.toFixed(3)); s.dirty=true; }
 function adjustPadPitch(d)  { pad().pitchOffset = Math.max(-24,Math.min(24,pad().pitchOffset+d*0.5)); sp('slice_pitch',pad().pitchOffset.toFixed(1)); s.dirty=true; }
-function adjustPadMode(d)   { const m = pad().modeOverride; pad().modeOverride = m >= 1 ? -1 : m + 1; sp('slice_mode',String(pad().modeOverride)); s.dirty=true; }
-function adjustThreshold(d) { s.threshold=Math.max(0,Math.min(1,s.threshold+d*0.05)); sp('threshold',s.threshold.toFixed(3)); s.slicerState=0; s.dirty=true; }
+function adjustPadMode(d)   { pad().modeOverride = pad().modeOverride === 1 ? 0 : 1; sp('slice_mode',String(pad().modeOverride)); s.dirty=true; }
 function triggerScan()      { resetPadState(); sp('scan','1'); }
 
 /* chromatic range string for READY display, e.g. "C2-D#4 (32sl)" */
@@ -208,15 +225,23 @@ function drawScanFlash() {
     print(0, 20, 'Detected:', 1);
     print(0, 32, s.sliceCountActual + ' slices', 1);
 }
-const MODE_LABELS = { '-1': '---', '0': 'TRIG', '1': 'GATE' };
+const MODE_LABELS = { '0': 'TRIG', '1': 'GATE' };
 function drawBankA() {
-    const p = pad();
     clear_screen(); drawSampleName();
-    print(0, 13, 'Pad ' + (s.selectedSlice + 1), 1);
-    print(0, 23, 'Str:'+fmtMs(p.startTrim)+'  End:'+fmtMs(p.endTrim), 1);
-    print(0, 33, 'Atk:'+Math.round(p.attack - 5)+'ms', 1);
-    print(0, 43, 'Dec:'+Math.round(p.decay)+'ms', 1);
-    print(0, 53, rangeStr().substring(0, 21), 1);
+    if (s.editScope === 'G') {
+        print(0, 13, '[G] Global', 1);
+        print(0, 23, 'Thresh:'+Math.round(s.threshold*100)+'%', 1);
+        print(0, 33, 'Vel:'+(s.velSens?'On':'Off'), 1);
+        print(0, 43, 'Atk:'+Math.round(s.globalAttack-5)+'ms  Dec:'+Math.round(s.globalDecay)+'ms', 1);
+        print(0, 53, 'Jog: Global Edit', 1);
+    } else {
+        const p = pad();
+        print(0, 13, '[P] Pad ' + (s.selectedSlice + 1), 1);
+        print(0, 23, 'Str:'+fmtMs(p.startTrim)+'  End:'+fmtMs(p.endTrim), 1);
+        print(0, 33, 'Atk:'+Math.round(p.attack - 5)+'ms', 1);
+        print(0, 43, 'Dec:'+Math.round(p.decay)+'ms', 1);
+        print(0, 53, 'Jog: Per-Pad Edit', 1);
+    }
 }
 function drawBankB() {
     const p = pad();
@@ -305,7 +330,9 @@ function onMidiMessageInternal(data) {
         if (s.slicerState === 1) {
             const slice = byte1 - 68;
             if (slice >= s.sliceCountActual) return;  /* pad out of range for this scan */
-            if (slice !== s.selectedSlice) selectSlice(slice);
+            selectSlice(slice);
+            /* reinforce per-pad mode to DSP so voice_start picks it up */
+            sp('slice_mode', String(padState[slice].modeOverride));
             s.dirty = true;
             if (s.view !== 'main') { s.view = 'main'; }
         }
@@ -330,25 +357,28 @@ function onMidiMessageInternal(data) {
         if (s.view === 'browser')     { browserSelect(); return; }
         if (s.view === 'sensitivity') { triggerScan(); s.view = 'main'; s.dirty = true; return; }
         if (s.slicerState !== 1)      { triggerScan(); return; }
-        /* In Bank B: toggle global/per-pad scope; in Bank A: open sensitivity */
-        if (s.knobBank === 'B') {
-            s.editScope = s.editScope === 'G' ? 'P' : 'G';
-            s.dirty = true;
-            return;
-        }
-        s.view = 'sensitivity'; s.dirty = true;
+        /* Toggle global/per-pad scope (both banks) */
+        s.editScope = s.editScope === 'G' ? 'P' : 'G';
+        s.dirty = true;
         return;
     }
 
-    /* Knobs 1-4: bank A (per-pad) */
+    /* Knobs 1-4: bank A (global or per-pad based on editScope) */
     if (cc===MoveKnob1||cc===MoveKnob2||cc===MoveKnob3||cc===MoveKnob4) {
         s.knobBank='A'; s.dirty=true;
-        if (s.slicerState!==1) return;
         const d=decodeDelta(val);
-        if (cc===MoveKnob1) adjustStartTrim(d);
-        if (cc===MoveKnob2) adjustEndTrim(d);
-        if (cc===MoveKnob3) adjustAttack(d);
-        if (cc===MoveKnob4) adjustDecay(d);
+        if (s.editScope === 'G') {
+            if (cc===MoveKnob1) adjustThreshold(d);
+            if (cc===MoveKnob2) adjustVelSens(d);
+            if (cc===MoveKnob3) adjustGlobalAttack(d);
+            if (cc===MoveKnob4) adjustGlobalDecay(d);
+        } else {
+            if (s.slicerState!==1) return;
+            if (cc===MoveKnob1) adjustStartTrim(d);
+            if (cc===MoveKnob2) adjustEndTrim(d);
+            if (cc===MoveKnob3) adjustAttack(d);
+            if (cc===MoveKnob4) adjustDecay(d);
+        }
         return;
     }
 

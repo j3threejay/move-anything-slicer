@@ -146,7 +146,7 @@ static void reset_pad(pad_params_t *p) {
     p->decay_ms        = 500.0f;
     p->gain            = 1.0f;          /* multiplier on global_gain */
     p->pitch_offset    = 0.0f;
-    p->mode_override   = -1;            /* -1 = follow global */
+    p->mode_override   = 1;             /* 1 = gate (default) */
     p->loop_mode       = LOOP_OFF;
 }
 
@@ -536,6 +536,12 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         if (n >= -1 && n <= 1) s->pads[s->selected_slice].mode_override = n;
     } else if (strcmp(key, "global_gain") == 0) {
         s->global_gain = atof(val);
+    } else if (strcmp(key, "global_attack") == 0) {
+        float a = atof(val); if (a < 5.0f) a = 5.0f;
+        for (int i = 0; i < MAX_SLICES; i++) s->pads[i].attack_ms = a;
+    } else if (strcmp(key, "global_decay") == 0) {
+        float d = atof(val);
+        for (int i = 0; i < MAX_SLICES; i++) s->pads[i].decay_ms = d;
     } else if (strcmp(key, "slice_loop") == 0) {
         int n = atoi(val);
         if (n >= LOOP_OFF && n <= LOOP_PINGPONG)
