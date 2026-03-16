@@ -34,7 +34,7 @@ const SAMPLES_DIR      = '/data/UserData/UserLibrary/Samples';
 const SCREEN_W         = 128;
 const SCAN_FLASH_TICKS = 120;
 const DBLCLICK_TICKS   = 10;   /* double-click window (tune to taste) */
-const LOOP_LABELS      = ['Off', 'Loop', 'Ping'];
+const LOOP_LABELS      = ['Off', 'Loop', 'Ping', 'Rev'];
 const MAX_SLICES       = 128;
 const ROOT_NOTE        = 36;   /* C2 — chromatic mapping root, matches DSP */
 const NOTE_NAMES       = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -61,6 +61,7 @@ const s = {
     globalAttack:     5.0,
     globalDecay:      500.0,
     velSens:          1,
+    monoMode:         0,
     mode:             'gate',
     editScope:        'P',       /* 'G'=global, 'P'=per-pad (jog click toggle) */
     sliceCountActual: 0,
@@ -91,9 +92,10 @@ function syncGlobal() {
     s.globalGain       = parseFloat(gp('global_gain', 0.8));
     s.mode             = gp('mode', 'gate');
     s.velSens          = parseInt(gp('velocity_sens', 1));
+    s.monoMode         = parseInt(gp('mono_mode', 0));
     s.sliceCountActual = parseInt(gp('slice_count_actual', 0));
     s.slicerState      = parseInt(gp('slicer_state', 0));
-    s.sampleName       = s.samplePath ? s.samplePath.split('/').pop().replace(/\.wav$/i, '') : '';
+    s.sampleName       = s.samplePath ? s.samplePath.split('/').pop().replace(/\.(wav|aif|aiff|mp3|flac)$/i, '') : '';
 }
 
 function resetPadState() {
@@ -128,7 +130,7 @@ function browserOpen(path) {
             if (n === '.' || n === '..') continue;
             const full = path + '/' + n;
             if (isDir(full)) dirs.push({ name: n, path: full, dir: true });
-            else if (/\.wav$/i.test(n)) files.push({ name: n, path: full, dir: false });
+            else if (/\.(wav|aif|aiff|mp3|flac)$/i.test(n)) files.push({ name: n, path: full, dir: false });
         }
         dirs.sort((a,b) => a.name.localeCompare(b.name));
         files.sort((a,b) => a.name.localeCompare(b.name));
@@ -159,7 +161,7 @@ function browserSelect() {
     else {
         sp('preview_stop', '1');
         sp('sample_path', e.path);
-        s.samplePath = e.path; s.sampleName = e.name.replace(/\.wav$/i, '');
+        s.samplePath = e.path; s.sampleName = e.name.replace(/\.(wav|aif|aiff|mp3|flac)$/i, '');
         s.slicerState = 0; s.sliceCountActual = 0;
         resetPadState();
         s.view = 'main'; s.dirty = true;
@@ -174,8 +176,9 @@ function adjustStartTrim(d) { pad().startTrim += d*5;                           
 function adjustEndTrim(d)   { pad().endTrim   += d*5;                                          sp('slice_end_trim',   pad().endTrim.toFixed(1));   s.dirty=true; }
 function adjustAttack(d)    { pad().attack = Math.max(5,Math.min(2000, pad().attack+d*5));     sp('slice_attack',     pad().attack.toFixed(1));    s.dirty=true; }
 function adjustDecay(d)     { pad().decay  = Math.max(0,Math.min(5000, pad().decay+d*20));     sp('slice_decay',      pad().decay.toFixed(1));     s.dirty=true; }
-function adjustLoop(d)      { pad().loop   = Math.max(0,Math.min(2,    pad().loop+(d>0?1:-1)));sp('slice_loop',       String(pad().loop));          s.dirty=true; }
+function adjustLoop(d)      { pad().loop   = Math.max(0,Math.min(3,    pad().loop+(d>0?1:-1)));sp('slice_loop',       String(pad().loop));          s.dirty=true; }
 /* global adjusters */
+function adjustMonoMode(d)  { s.monoMode = s.monoMode ? 0 : 1; sp('mono_mode',String(s.monoMode)); s.dirty=true; }
 function adjustMode(d)      { s.mode = s.mode==='trigger'?'gate':'trigger'; sp('mode',s.mode); s.dirty=true; }
 function adjustPitch(d)     { s.pitch = Math.max(-24,Math.min(24,s.pitch+d*0.5)); sp('pitch',s.pitch.toFixed(1)); s.dirty=true; }
 function adjustGlobalGain(d){ s.globalGain = Math.max(0,Math.min(1,s.globalGain+d*0.05)); sp('global_gain',s.globalGain.toFixed(3)); s.dirty=true; }
@@ -241,7 +244,7 @@ function drawBankA() {
     } else {
         print(0, 13, '[G] Global', 1);
         print(0, 23, 'Atk:'+Math.round(s.globalAttack-5)+'ms  Dec:'+Math.round(s.globalDecay)+'ms', 1);
-        print(0, 33, '', 1);
+        print(0, 33, 'Mono:'+(s.monoMode?'On':'Off'), 1);
         print(0, 43, '', 1);
         print(0, 53, rangeStr(), 1);
     }
@@ -390,7 +393,7 @@ function onMidiMessageInternal(data) {
         } else {
             if (cc===MoveKnob1) adjustGlobalAttack(d);
             if (cc===MoveKnob2) adjustGlobalDecay(d);
-            /* K3, K4 inactive in global scope */
+            if (cc===MoveKnob3) adjustMonoMode(d);
         }
         return;
     }

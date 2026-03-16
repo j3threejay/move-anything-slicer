@@ -24,6 +24,13 @@
 #include <math.h>
 #include <stdint.h>
 
+#define MINIMP3_IMPLEMENTATION
+#include "dsp/minimp3.h"
+
+#define DR_FLAC_IMPLEMENTATION
+#define DR_FLAC_NO_STDIO
+#include "dsp/dr_flac.h"
+
 #define SAMPLE_RATE      44100
 #define BLOCK_SIZE       128
 #define MAX_SLICES       128
@@ -37,6 +44,7 @@
 #define LOOP_OFF      0
 #define LOOP_FORWARD  1
 #define LOOP_PINGPONG 2
+#define LOOP_REVERSE  3
 
 /* ── Envelope states ─────────────────────────────────────────────────────── */
 typedef enum { ENV_IDLE, ENV_ATTACK, ENV_SUSTAIN, ENV_DECAY } env_state_t;
@@ -72,7 +80,7 @@ typedef struct {
     float  gain;             /* per-pad gain multiplier (0.0–2.0, default 1.0) */
     float  pitch_offset;     /* per-pad pitch offset in semitones (default 0) */
     int    mode_override;    /* -1=follow global, 0=trigger, 1=gate */
-    int    loop_mode;        /* LOOP_OFF / LOOP_FORWARD / LOOP_PINGPONG */
+    int    loop_mode;        /* LOOP_OFF / LOOP_FORWARD / LOOP_PINGPONG / LOOP_REVERSE */
 } pad_params_t;
 
 /* ── Main plugin state ───────────────────────────────────────────────────── */
@@ -94,6 +102,7 @@ typedef struct {
     float     global_gain;   /* global gain 0.0–1.0 (default 0.8) */
     int       mode_gate;     /* global mode: 0=trigger, 1=gate */
     int       velocity_sens; /* 0=off (fixed gain 1.0), 1=on (vel/127) */
+    int       mono_mode;     /* 0=poly (8 voices), 1=mono (1 voice) */
 
     /* per-pad params */
     pad_params_t pads[MAX_SLICES];
@@ -238,9 +247,270 @@ static int load_wav_buf(const char *path, int16_t **buf_out, int32_t *frames_out
     return 1;
 }
 
-static int load_wav(slicer_t *s, const char *path) {
+/* ── AIFF/AIF loader (8/16/24-bit PCM, big-endian) ───────────────────────── */
+static inline uint16_t read_be16(const uint8_t *p) { return (uint16_t)((p[0]<<8)|p[1]); }
+static inline uint32_t read_be32(const uint8_t *p) { return (uint32_t)((p[0]<<24)|(p[1]<<16)|(p[2]<<8)|p[3]); }
+
+/* Convert 80-bit IEEE 754 extended to double (enough for sample rates) */
+static double extended_to_double(const uint8_t *p) {
+    int sign = (p[0] >> 7) & 1;
+    int exp  = ((p[0] & 0x7F) << 8) | p[1];
+    uint64_t mantissa = 0;
+    for (int i = 0; i < 8; i++) mantissa = (mantissa << 8) | p[2+i];
+    if (exp == 0 && mantissa == 0) return 0.0;
+    double val = (double)mantissa / (1ULL << 63) * pow(2.0, exp - 16383);
+    return sign ? -val : val;
+}
+
+static int load_aiff_buf(const char *path, int16_t **buf_out, int32_t *frames_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    uint8_t hdr[12];
+    if (fread(hdr, 1, 12, f) < 12) { fclose(f); return 0; }
+    if (memcmp(hdr, "FORM", 4) != 0) { fclose(f); return 0; }
+    /* Accept both AIFF and AIFC (uncompressed) */
+    if (memcmp(hdr+8, "AIFF", 4) != 0 && memcmp(hdr+8, "AIFC", 4) != 0) { fclose(f); return 0; }
+
+    uint16_t channels = 0, bits_per_sample = 0;
+    uint32_t num_frames = 0;
+    double   sample_rate = 0.0;
+    long     ssnd_offset = 0;
+    uint32_t ssnd_size = 0;
+    int      found_comm = 0, found_ssnd = 0;
+
+    uint8_t chunk_hdr[8];
+    while (fread(chunk_hdr, 1, 8, f) == 8) {
+        uint32_t chunk_size = read_be32(chunk_hdr + 4);
+        long chunk_start = ftell(f);
+
+        if (memcmp(chunk_hdr, "COMM", 4) == 0) {
+            uint8_t comm[26];
+            uint32_t rd = chunk_size < 26 ? chunk_size : 26;
+            if (fread(comm, 1, rd, f) < rd) { fclose(f); return 0; }
+            channels        = read_be16(comm);
+            num_frames      = read_be32(comm + 2);
+            bits_per_sample = read_be16(comm + 6);
+            sample_rate     = extended_to_double(comm + 8);
+            (void)sample_rate; /* we resample to 44100 in the host */
+            found_comm = 1;
+        } else if (memcmp(chunk_hdr, "SSND", 4) == 0) {
+            /* SSND has 8 bytes of offset+blockSize before PCM data */
+            uint8_t ssnd_hdr[8];
+            if (fread(ssnd_hdr, 1, 8, f) < 8) { fclose(f); return 0; }
+            ssnd_offset = ftell(f);
+            ssnd_size   = chunk_size - 8;
+            found_ssnd  = 1;
+        }
+
+        /* skip to next chunk (pad to even) */
+        fseek(f, chunk_start + (long)(chunk_size + (chunk_size & 1)), SEEK_SET);
+    }
+
+    if (!found_comm || !found_ssnd || channels == 0 || num_frames == 0) { fclose(f); return 0; }
+    if (bits_per_sample != 8 && bits_per_sample != 16 && bits_per_sample != 24) { fclose(f); return 0; }
+
+    int32_t frames = (int32_t)num_frames;
+    int16_t *buf = malloc((size_t)frames * 2 * sizeof(int16_t));
+    if (!buf) { fclose(f); return 0; }
+
+    fseek(f, ssnd_offset, SEEK_SET);
+    uint32_t bytes_per_smp = bits_per_sample / 8;
+
+    if (bits_per_sample == 16) {
+        uint32_t raw_size = (uint32_t)frames * channels * 2;
+        uint8_t *raw = malloc(raw_size);
+        if (!raw) { free(buf); fclose(f); return 0; }
+        fread(raw, 1, raw_size, f);
+        for (int32_t i = 0; i < frames; i++) {
+            for (int c = 0; c < 2; c++) {
+                int src_c = (c < (int)channels) ? c : 0;
+                int off = (int)(i * channels * 2 + src_c * 2);
+                /* big-endian 16-bit signed */
+                int16_t v = (int16_t)((raw[off] << 8) | raw[off+1]);
+                buf[i*2+c] = v;
+            }
+        }
+        free(raw);
+    } else if (bits_per_sample == 24) {
+        uint32_t raw_size = (uint32_t)frames * channels * 3;
+        uint8_t *raw = malloc(raw_size);
+        if (!raw) { free(buf); fclose(f); return 0; }
+        fread(raw, 1, raw_size, f);
+        for (int32_t i = 0; i < frames; i++) {
+            for (int c = 0; c < 2; c++) {
+                int src_c = (c < (int)channels) ? c : 0;
+                int off = (int)(i * channels * 3 + src_c * 3);
+                /* big-endian 24-bit signed → 16-bit */
+                int32_t v = ((int32_t)(int8_t)raw[off] << 16)
+                          | ((int32_t)raw[off+1] << 8)
+                          | ((int32_t)raw[off+2]);
+                buf[i*2+c] = (int16_t)(v >> 8);
+            }
+        }
+        free(raw);
+    } else { /* 8-bit */
+        uint32_t raw_size = (uint32_t)frames * channels;
+        uint8_t *raw = malloc(raw_size);
+        if (!raw) { free(buf); fclose(f); return 0; }
+        fread(raw, 1, raw_size, f);
+        for (int32_t i = 0; i < frames; i++) {
+            for (int c = 0; c < 2; c++) {
+                int src_c = (c < (int)channels) ? c : 0;
+                /* 8-bit AIFF is signed, scale to 16-bit */
+                int16_t v = (int16_t)((int8_t)raw[i * channels + src_c]) << 8;
+                buf[i*2+c] = v;
+            }
+        }
+        free(raw);
+    }
+
+    fclose(f);
+    *buf_out    = buf;
+    *frames_out = frames;
+    return 1;
+}
+
+/* ── MP3 loader (via minimp3) ────────────────────────────────────────────── */
+static int load_mp3_buf(const char *path, int16_t **buf_out, int32_t *frames_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (file_size <= 0 || file_size > 200 * 1024 * 1024) { fclose(f); return 0; } /* 200MB cap */
+
+    uint8_t *file_data = malloc((size_t)file_size);
+    if (!file_data) { fclose(f); return 0; }
+    fread(file_data, 1, (size_t)file_size, f);
+    fclose(f);
+
+    mp3dec_t mp3d;
+    mp3dec_init(&mp3d);
+
+    /* First pass: count total frames to size the output buffer */
+    int32_t total_frames = 0;
+    size_t offset = 0;
+    mp3dec_frame_info_t info;
+    int16_t pcm_tmp[MINIMP3_MAX_SAMPLES_PER_FRAME];
+
+    while (offset < (size_t)file_size) {
+        int samples = mp3dec_decode_frame(&mp3d, file_data + offset,
+                                          (int)(file_size - (long)offset), pcm_tmp, &info);
+        if (info.frame_bytes == 0) break;
+        offset += (size_t)info.frame_bytes;
+        total_frames += samples;
+    }
+
+    if (total_frames <= 0) { free(file_data); return 0; }
+
+    int16_t *buf = malloc((size_t)total_frames * 2 * sizeof(int16_t));
+    if (!buf) { free(file_data); return 0; }
+
+    /* Second pass: decode into output buffer */
+    mp3dec_init(&mp3d);
+    offset = 0;
+    int32_t out_pos = 0;
+    int channels = 0;
+
+    while (offset < (size_t)file_size && out_pos < total_frames) {
+        int samples = mp3dec_decode_frame(&mp3d, file_data + offset,
+                                          (int)(file_size - (long)offset), pcm_tmp, &info);
+        if (info.frame_bytes == 0) break;
+        offset += (size_t)info.frame_bytes;
+        channels = info.channels;
+
+        for (int i = 0; i < samples && out_pos < total_frames; i++, out_pos++) {
+            if (channels == 2) {
+                buf[out_pos*2]   = pcm_tmp[i*2];
+                buf[out_pos*2+1] = pcm_tmp[i*2+1];
+            } else {
+                buf[out_pos*2] = buf[out_pos*2+1] = pcm_tmp[i];
+            }
+        }
+    }
+
+    free(file_data);
+    *buf_out    = buf;
+    *frames_out = total_frames;
+    return 1;
+}
+
+/* ── FLAC loader (via dr_flac) ───────────────────────────────────────────── */
+static int load_flac_buf(const char *path, int16_t **buf_out, int32_t *frames_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (file_size <= 0 || file_size > 200 * 1024 * 1024) { fclose(f); return 0; }
+
+    uint8_t *file_data = malloc((size_t)file_size);
+    if (!file_data) { fclose(f); return 0; }
+    fread(file_data, 1, (size_t)file_size, f);
+    fclose(f);
+
+    unsigned int channels, sample_rate;
+    drflac_uint64 total_pcm_frames;
+    drflac_int16 *pcm = drflac_open_memory_and_read_pcm_frames_s16(
+        file_data, (size_t)file_size, &channels, &sample_rate, &total_pcm_frames, NULL);
+    free(file_data);
+
+    if (!pcm || total_pcm_frames == 0) { if (pcm) drflac_free(pcm, NULL); return 0; }
+
+    int32_t frames = (int32_t)total_pcm_frames;
+    int16_t *buf = malloc((size_t)frames * 2 * sizeof(int16_t));
+    if (!buf) { drflac_free(pcm, NULL); return 0; }
+
+    if (channels >= 2) {
+        for (int32_t i = 0; i < frames; i++) {
+            buf[i*2]   = pcm[i * channels];
+            buf[i*2+1] = pcm[i * channels + 1];
+        }
+    } else {
+        for (int32_t i = 0; i < frames; i++) {
+            buf[i*2] = buf[i*2+1] = pcm[i];
+        }
+    }
+
+    drflac_free(pcm, NULL);
+    *buf_out    = buf;
+    *frames_out = frames;
+    return 1;
+}
+
+/* ── Unified audio loader — dispatches by file extension ─────────────────── */
+static const char* get_extension(const char *path) {
+    const char *dot = strrchr(path, '.');
+    return dot ? dot : "";
+}
+
+static int strcasecmp_ext(const char *a, const char *b) {
+    while (*a && *b) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (ca != cb) return ca - cb;
+        a++; b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+static int load_audio_buf(const char *path, int16_t **buf_out, int32_t *frames_out) {
+    const char *ext = get_extension(path);
+    if (strcasecmp_ext(ext, ".wav") == 0)
+        return load_wav_buf(path, buf_out, frames_out);
+    if (strcasecmp_ext(ext, ".aif") == 0 || strcasecmp_ext(ext, ".aiff") == 0)
+        return load_aiff_buf(path, buf_out, frames_out);
+    if (strcasecmp_ext(ext, ".mp3") == 0)
+        return load_mp3_buf(path, buf_out, frames_out);
+    if (strcasecmp_ext(ext, ".flac") == 0)
+        return load_flac_buf(path, buf_out, frames_out);
+    return 0; /* unsupported format */
+}
+
+static int load_sample(slicer_t *s, const char *path) {
     int16_t *buf; int32_t frames;
-    if (!load_wav_buf(path, &buf, &frames)) return 0;
+    if (!load_audio_buf(path, &buf, &frames)) return 0;
     if (s->sample_data) free(s->sample_data);
     s->sample_data   = buf;
     s->sample_frames = frames;
@@ -389,6 +659,17 @@ static void voice_start(slicer_t *s, int note, int velocity) {
     int32_t end   = clampi(base_end   + (int32_t)ms_to_frames(p->end_offset_ms),   1, s->sample_frames);
     if (end <= start) end = start + 1;
 
+    /* mono mode: kill all active voices before starting new one */
+    if (s->mono_mode) {
+        for (int i = 0; i < MAX_VOICES; i++) {
+            if (s->voices[i].active) {
+                s->voices[i].active = 0;
+                s->voices[i].env_state = ENV_IDLE;
+                s->voices[i].env_val = 0.0f;
+            }
+        }
+    }
+
     voice_t *v = find_voice_for_note(s, note);
     if (v) {
         memset(v, 0, sizeof(voice_t));
@@ -399,9 +680,11 @@ static void voice_start(slicer_t *s, int note, int velocity) {
     v->active      = 1;
     v->note        = note;
     v->slice_idx   = slice_idx;
-    v->pos         = (int64_t)start << 16;
+    v->pos         = (p->loop_mode == LOOP_REVERSE)
+                     ? (int64_t)(end - 1) << 16
+                     : (int64_t)start << 16;
     v->rate        = semitones_to_rate(s->pitch + p->pitch_offset);
-    v->direction   = 1;
+    v->direction   = (p->loop_mode == LOOP_REVERSE) ? -1 : 1;
     v->slice_start = start;
     v->slice_end   = end;
     v->loop_mode   = p->loop_mode;
@@ -513,6 +796,8 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         s->mode_gate = (strcmp(val, "gate") == 0) ? 1 : 0;
     } else if (strcmp(key, "velocity_sens") == 0) {
         s->velocity_sens = atoi(val) ? 1 : 0;
+    } else if (strcmp(key, "mono_mode") == 0) {
+        s->mono_mode = atoi(val) ? 1 : 0;
     } else if (strcmp(key, "selected_slice") == 0) {
         int n = atoi(val);
         if (n >= 0 && n < MAX_SLICES) s->selected_slice = n;
@@ -544,12 +829,12 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         for (int i = 0; i < MAX_SLICES; i++) s->pads[i].decay_ms = d;
     } else if (strcmp(key, "slice_loop") == 0) {
         int n = atoi(val);
-        if (n >= LOOP_OFF && n <= LOOP_PINGPONG)
+        if (n >= LOOP_OFF && n <= LOOP_REVERSE)
             s->pads[s->selected_slice].loop_mode = n;
 
     /* sample + scan */
     } else if (strcmp(key, "sample_path") == 0) {
-        if (load_wav(s, val)) { s->slicer_state = 0; preview_slice_count(s); }
+        if (load_sample(s, val)) { s->slicer_state = 0; preview_slice_count(s); }
     } else if (strcmp(key, "scan") == 0) {
         detect_slices(s);
         s->slicer_state = (s->slice_count_actual > 0) ? 1 : 2;
@@ -558,7 +843,7 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
     } else if (strcmp(key, "preview_path") == 0) {
         s->preview_active = 0;
         int16_t *buf; int32_t frames;
-        if (load_wav_buf(val, &buf, &frames)) {
+        if (load_audio_buf(val, &buf, &frames)) {
             if (s->preview_data) free(s->preview_data);
             s->preview_data   = buf;
             s->preview_frames = frames;
@@ -583,13 +868,14 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         if (json_get_string(val, "mode", str, sizeof(str)))
             s->mode_gate = (strcmp(str, "gate") == 0) ? 1 : 0;
         if (json_get_int(val, "vel_sens", &ival)) s->velocity_sens = ival ? 1 : 0;
+        if (json_get_int(val, "mono", &ival)) s->mono_mode = ival ? 1 : 0;
         /* global_gain: if absent (old save), use 1.0 so old per-pad gains work */
         if (json_get_float(val, "gg", &fval)) s->global_gain = fval;
         else s->global_gain = 1.0f;
 
         /* Load sample from saved path */
         if (json_get_string(val, "sample_path", str, sizeof(str)) && str[0]) {
-            load_wav(s, str);
+            load_sample(s, str);
         }
 
         /* Restore slice boundaries directly (no re-scan) */
@@ -652,7 +938,7 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
                 const char *p = csv;
                 for (int i = 0; i < n && *p; i++) {
                     int lm = atoi(p);
-                    if (lm >= LOOP_OFF && lm <= LOOP_PINGPONG) s->pads[i].loop_mode = lm;
+                    if (lm >= LOOP_OFF && lm <= LOOP_REVERSE) s->pads[i].loop_mode = lm;
                     const char *c = strchr(p, ','); if (!c) break; p = c + 1;
                 }
             }
@@ -695,6 +981,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "pitch") == 0)              return snprintf(buf, buf_len, "%.1f", s->pitch);
     if (strcmp(key, "mode") == 0)               return snprintf(buf, buf_len, "%s",   s->mode_gate ? "gate" : "trigger");
     if (strcmp(key, "velocity_sens") == 0)      return snprintf(buf, buf_len, "%d",   s->velocity_sens);
+    if (strcmp(key, "mono_mode") == 0)          return snprintf(buf, buf_len, "%d",   s->mono_mode);
     if (strcmp(key, "sample_path") == 0)        return snprintf(buf, buf_len, "%s",   s->sample_path);
     if (strcmp(key, "slice_count_actual") == 0) return snprintf(buf, buf_len, "%d",   s->slice_count_actual);
     if (strcmp(key, "preview_slices") == 0)     return snprintf(buf, buf_len, "%d",   s->preview_slice_count);
@@ -726,6 +1013,8 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
              "\"type\":\"enum\",\"options\":[\"trigger\",\"gate\"],\"default\":\"gate\"},"
             "{\"key\":\"global_gain\",\"name\":\"Gain\","
              "\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"default\":0.8},"
+            "{\"key\":\"mono_mode\",\"name\":\"Mono\","
+             "\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"default\":\"Off\"},"
             "{\"key\":\"global_attack\",\"name\":\"Global Attack\","
              "\"type\":\"float\",\"min\":5.0,\"max\":2000.0,\"default\":5.0,\"unit\":\"ms\"},"
             "{\"key\":\"global_decay\",\"name\":\"Global Decay\","
@@ -745,7 +1034,7 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
             "{\"key\":\"slice_mode\",\"name\":\"Pad Mode\","
              "\"type\":\"enum\",\"options\":[\"0\",\"1\"],\"labels\":[\"Trig\",\"Gate\"],\"default\":\"1\"},"
             "{\"key\":\"slice_loop\",\"name\":\"Loop\","
-             "\"type\":\"enum\",\"options\":[\"0\",\"1\",\"2\"],\"labels\":[\"Off\",\"Loop\",\"Ping-Pong\"],\"default\":\"0\"}"
+             "\"type\":\"enum\",\"options\":[\"0\",\"1\",\"2\",\"3\"],\"labels\":[\"Off\",\"Loop\",\"Ping-Pong\",\"Reverse\"],\"default\":\"0\"}"
             "]";
         int len = (int)strlen(json);
         if (len < buf_len) { memcpy(buf, json, (size_t)len + 1); return len; }
@@ -761,10 +1050,11 @@ static int v2_get_param(void *inst, const char *key, char *buf, int buf_len) {
         pos += snprintf(tmp + pos, sizeof(tmp) - pos,
             "{\"threshold\":%.3f,\"slices\":%d,\"pitch\":%.1f,"
             "\"mode\":\"%s\",\"vel_sens\":%d,\"gg\":%.3f,"
-            "\"sample_path\":\"%s\",\"sca\":%d",
+            "\"mono\":%d,\"sample_path\":\"%s\",\"sca\":%d",
             s->threshold, s->slice_count, s->pitch,
             s->mode_gate ? "gate" : "trigger",
-            s->velocity_sens, s->global_gain, s->sample_path, n);
+            s->velocity_sens, s->global_gain,
+            s->mono_mode, s->sample_path, n);
 
         if (n > 0 && pos < (int)sizeof(tmp) - 64) {
             /* slice_points: n+1 values */
@@ -936,6 +1226,10 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
                 if (pos_int >= v->slice_end) {
                     if (v->release == 0) v->release = RELEASE_SAMPLES;
                     pos_int = v->slice_end - 1;
+                }
+                if (pos_int < v->slice_start) {
+                    if (v->release == 0) v->release = RELEASE_SAMPLES;
+                    pos_int = v->slice_start;
                 }
             }
 
