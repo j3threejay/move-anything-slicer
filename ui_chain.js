@@ -31,6 +31,7 @@ import {
 import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
 
 const SAMPLES_DIR      = '/data/UserData/UserLibrary/Samples';
+const BROWSER_ROOT     = '/data/UserData/UserLibrary';
 const SCREEN_W         = 128;
 const SCAN_FLASH_TICKS = 120;
 const DBLCLICK_TICKS   = 10;   /* double-click window (tune to taste) */
@@ -123,7 +124,7 @@ function browserOpen(path) {
         const [names, err] = os.readdir(path);
         if (err || !names) return;
         const entries = [];
-        if (path !== SAMPLES_DIR) {
+        if (path !== BROWSER_ROOT) {
             const parts = path.split('/'); parts.pop();
             entries.push({ name: '..', path: parts.join('/') || '/', dir: true });
         }
