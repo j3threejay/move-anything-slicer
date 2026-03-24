@@ -62,6 +62,7 @@ const s = {
     globalDecay:      500.0,
     velSens:          1,
     monoMode:         0,
+    globalSpeed:      1.0,
     mode:             'gate',
     editScope:        'P',       /* 'G'=global, 'P'=per-pad (jog click toggle) */
     sliceCountActual: 0,
@@ -93,6 +94,7 @@ function syncGlobal() {
     s.mode             = gp('mode', 'gate');
     s.velSens          = parseInt(gp('velocity_sens', 1));
     s.monoMode         = parseInt(gp('mono_mode', 0));
+    s.globalSpeed      = parseFloat(gp('speed', 1.0));
     s.sliceCountActual = parseInt(gp('slice_count_actual', 0));
     s.slicerState      = parseInt(gp('slicer_state', 0));
     s.sampleName       = s.samplePath ? s.samplePath.split('/').pop().replace(/\.(wav|aif|aiff|mp3|flac)$/i, '') : '';
@@ -195,6 +197,7 @@ function adjustGlobalDecay(d) {
     s.dirty=true;
 }
 function adjustVelSens(d)   { s.velSens = s.velSens ? 0 : 1; sp('velocity_sens',String(s.velSens)); s.dirty=true; }
+function adjustGlobalSpeed(d) { s.globalSpeed = Math.max(0.5,Math.min(2.0,s.globalSpeed+d*0.01)); sp('speed',s.globalSpeed.toFixed(2)); s.dirty=true; }
 function adjustThreshold(d) { s.threshold=Math.max(0,Math.min(1,s.threshold+d*0.05)); sp('threshold',s.threshold.toFixed(3)); s.slicerState=0; s.dirty=true; }
 /* per-pad adjusters */
 function adjustPadGain(d)   { pad().gain = Math.max(0,Math.min(2,pad().gain+d*0.05)); sp('slice_gain',pad().gain.toFixed(3)); s.dirty=true; }
@@ -245,7 +248,7 @@ function drawBankA() {
         print(0, 13, '[G] Global', 1);
         print(0, 23, 'Atk:'+Math.round(s.globalAttack-5)+'ms  Dec:'+Math.round(s.globalDecay)+'ms', 1);
         print(0, 33, 'Mono:'+(s.monoMode?'On':'Off'), 1);
-        print(0, 43, '', 1);
+        print(0, 43, 'Speed:'+Math.round(s.globalSpeed*100)+'%', 1);
         print(0, 53, rangeStr(), 1);
     }
 }
@@ -394,6 +397,7 @@ function onMidiMessageInternal(data) {
             if (cc===MoveKnob1) adjustGlobalAttack(d);
             if (cc===MoveKnob2) adjustGlobalDecay(d);
             if (cc===MoveKnob3) adjustMonoMode(d);
+            if (cc===MoveKnob4) adjustGlobalSpeed(d);
         }
         return;
     }

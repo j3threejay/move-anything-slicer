@@ -1,9 +1,12 @@
-FROM debian:bookworm
+# Slicer Build Environment
+# Targets: Ableton Move (aarch64 Linux)
+# Bungee requires C++20, so we use Debian Bookworm with GCC 12.
 
-RUN dpkg --add-architecture arm64
+FROM debian:bookworm
 
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
     binutils-aarch64-linux-gnu \
     make \
     file \
@@ -13,5 +16,6 @@ WORKDIR /build
 
 ENV CROSS_PREFIX=aarch64-linux-gnu-
 ENV CC=aarch64-linux-gnu-gcc
+ENV CXX=aarch64-linux-gnu-g++
 
 CMD ["./scripts/build.sh"]

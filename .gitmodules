@@ -1,0 +1,3 @@
+[submodule "src/bungee"]
+	path = src/bungee
+	url = https://github.com/bungee-audio-stretch/bungee.git
