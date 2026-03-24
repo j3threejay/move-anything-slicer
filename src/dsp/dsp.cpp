@@ -538,7 +538,58 @@ static int load_sample(slicer_t *s, const char *path) {
     return 1;
 }
 
-/* ── Transient detection ─────────────────────────────────────────────────── */
+/* ── Transient detection (ranked) ────────────────────────────────────────── */
+
+/* Transient candidate: position + strength score */
+typedef struct { int32_t pos; float score; } transient_t;
+
+/* Detect all transients at max sensitivity, return count.
+   Stores position + strength score for each. */
+static int detect_all_transients(slicer_t *s, transient_t *out, int max_out) {
+    int32_t total_end = s->sample_frames;
+    int win = 512;
+    float det_threshold = 2.0f;  /* fixed low threshold to catch everything */
+    int count = 0;
+    float prev_rms = 0.001f;
+
+    for (int32_t i = 0; i < total_end - win && count < max_out; i += win/2) {
+        float rms = 0.0f;
+        for (int j = 0; j < win; j++) {
+            int32_t idx = (i + j) * 2;
+            float l = s->sample_data[idx]   / 32768.0f;
+            float r = s->sample_data[idx+1] / 32768.0f;
+            rms += l*l + r*r;
+        }
+        rms = sqrtf(rms / (win * 2));
+
+        float ratio = (prev_rms > 0.0001f) ? (rms / prev_rms) : 0.0f;
+        if (ratio > det_threshold && rms > 0.01f) {
+            int32_t min_gap = SAMPLE_RATE / 32;
+            if (count == 0 || (i - out[count-1].pos) > min_gap) {
+                out[count].pos = i;
+                out[count].score = ratio * rms;  /* rank by spike strength */
+                count++;
+            }
+        }
+        prev_rms = rms * 0.3f + prev_rms * 0.7f;
+    }
+    return count;
+}
+
+/* Compare transients by score (descending) for qsort */
+static int cmp_score_desc(const void *a, const void *b) {
+    float sa = ((const transient_t *)a)->score;
+    float sb = ((const transient_t *)b)->score;
+    return (sb > sa) ? 1 : (sb < sa) ? -1 : 0;
+}
+
+/* Compare transients by position (ascending) for qsort */
+static int cmp_pos_asc(const void *a, const void *b) {
+    int32_t pa = ((const transient_t *)a)->pos;
+    int32_t pb = ((const transient_t *)b)->pos;
+    return (pa > pb) ? 1 : (pa < pb) ? -1 : 0;
+}
+
 static void detect_slices(slicer_t *s) {
     if (!s->sample_data || s->sample_frames == 0) return;
 
@@ -547,87 +598,79 @@ static void detect_slices(slicer_t *s) {
     int32_t region      = total_end - total_start;
     if (region <= 0) return;
 
-    int win = 512;
-    float det_threshold = 1.5f + (1.0f - s->threshold) * 8.0f;
+    /* Step 1: detect all transients at max sensitivity */
+    transient_t all[MAX_SLICES];
+    int total_detected = detect_all_transients(s, all, MAX_SLICES);
 
-    int32_t markers[MAX_SLICES];
-    int     nmarkers = 0;
-    markers[nmarkers++] = total_start;
-
-    float prev_rms = 0.001f;
-
-    /* scan for transients up to MAX_SLICES — not capped by slice_count */
-    for (int32_t i = total_start; i < total_end - win && nmarkers < MAX_SLICES; i += win/2) {
-        float rms = 0.0f;
-        for (int j = 0; j < win; j++) {
-            int32_t idx = (i + j) * 2;
-            float l = s->sample_data[idx]   / 32768.0f;
-            float r = s->sample_data[idx+1] / 32768.0f;
-            rms += l*l + r*r;
-        }
-        rms = sqrtf(rms / (win * 2));
-
-        if (rms > prev_rms * det_threshold && rms > 0.01f) {
-            int32_t min_gap = SAMPLE_RATE / 32;
-            if (nmarkers == 0 || (i - markers[nmarkers-1]) > min_gap) {
-                markers[nmarkers++] = i;
-            }
-        }
-        prev_rms = rms * 0.3f + prev_rms * 0.7f;
-    }
-
-    /* fallback: no transients — divide evenly using slice_count as chunk count */
-    if (nmarkers < 2) {
-        nmarkers = 0;
+    /* Step 2: threshold maps to how many to keep (1.0 = all, 0.0 = just 2) */
+    int keep;
+    if (total_detected < 2) {
+        /* fallback: no transients — divide evenly */
         int n = (s->slice_count > 0) ? s->slice_count : 16;
         int32_t step = region / n;
-        for (int i = 0; i < n; i++) {
-            markers[nmarkers++] = total_start + i * step;
-        }
+        s->slice_count_actual = n;
+        for (int i = 0; i < n; i++) s->slice_points[i] = total_start + i * step;
+        s->slice_points[n] = total_end;
+        for (int i = 0; i < MAX_SLICES; i++) reset_pad(&s->pads[i]);
+        s->preview_slice_count = n;
+        return;
     }
 
-    s->slice_count_actual = nmarkers;
-    for (int i = 0; i < nmarkers; i++) s->slice_points[i] = markers[i];
+    keep = 2 + (int)((s->threshold) * (total_detected - 2) + 0.5f);
+    if (keep > total_detected) keep = total_detected;
+    if (keep < 2) keep = 2;
+
+    /* Step 3: sort by score (descending), take top N */
+    qsort(all, total_detected, sizeof(transient_t), cmp_score_desc);
+
+    /* Step 4: re-sort the kept ones by position (ascending) */
+    qsort(all, keep, sizeof(transient_t), cmp_pos_asc);
+
+    /* Always include sample start as first slice point */
+    s->slice_points[0] = total_start;
+    int nmarkers = 1;
+    for (int i = 0; i < keep && nmarkers < MAX_SLICES; i++) {
+        /* Skip if too close to previous marker or to the start */
+        if (all[i].pos > s->slice_points[nmarkers - 1] + SAMPLE_RATE / 32) {
+            s->slice_points[nmarkers++] = all[i].pos;
+        }
+    }
     s->slice_points[nmarkers] = total_end;
+    s->slice_count_actual = nmarkers;
 
     /* reset all per-pad params on fresh scan */
     for (int i = 0; i < MAX_SLICES; i++) reset_pad(&s->pads[i]);
     s->preview_slice_count = s->slice_count_actual;
 }
 
-/* Count-only preview — same algorithm as detect_slices but doesn't
-   touch slice_points, pad params, or slice_count_actual.             */
+/* Count-only preview — same ranked algorithm but doesn't
+   touch slice_points, pad params, or slice_count_actual.  */
 static void preview_slice_count(slicer_t *s) {
     if (!s->sample_data || s->sample_frames == 0) { s->preview_slice_count = 0; return; }
 
-    int32_t total_end = s->sample_frames;
-    int win = 512;
-    float det_threshold = 1.5f + (1.0f - s->threshold) * 8.0f;
-    int nmarkers = 1; /* first marker at start */
-    int32_t last_marker = 0;
-    float prev_rms = 0.001f;
+    transient_t all[MAX_SLICES];
+    int total_detected = detect_all_transients(s, all, MAX_SLICES);
 
-    for (int32_t i = 0; i < total_end - win && nmarkers < MAX_SLICES; i += win/2) {
-        float rms = 0.0f;
-        for (int j = 0; j < win; j++) {
-            int32_t idx = (i + j) * 2;
-            float l = s->sample_data[idx]   / 32768.0f;
-            float r = s->sample_data[idx+1] / 32768.0f;
-            rms += l*l + r*r;
-        }
-        rms = sqrtf(rms / (win * 2));
-        if (rms > prev_rms * det_threshold && rms > 0.01f) {
-            int32_t min_gap = SAMPLE_RATE / 32;
-            if ((i - last_marker) > min_gap) {
-                nmarkers++;
-                last_marker = i;
-            }
-        }
-        prev_rms = rms * 0.3f + prev_rms * 0.7f;
-    }
-    if (nmarkers < 2) {
+    if (total_detected < 2) {
         int n = (s->slice_count > 0) ? s->slice_count : 16;
-        nmarkers = n;
+        s->preview_slice_count = n;
+        return;
+    }
+
+    int keep = 2 + (int)((s->threshold) * (total_detected - 2) + 0.5f);
+    if (keep > total_detected) keep = total_detected;
+    if (keep < 2) keep = 2;
+
+    /* Account for deduplication: sort by score, take top keep, sort by pos, dedup */
+    qsort(all, total_detected, sizeof(transient_t), cmp_score_desc);
+    qsort(all, keep, sizeof(transient_t), cmp_pos_asc);
+    int nmarkers = 1;  /* sample start */
+    int32_t last_pos = 0;
+    for (int i = 0; i < keep; i++) {
+        if (all[i].pos > last_pos + SAMPLE_RATE / 32) {
+            nmarkers++;
+            last_pos = all[i].pos;
+        }
     }
     s->preview_slice_count = nmarkers;
 }
@@ -843,6 +886,17 @@ static void voice_release(voice_t *v) {
         v->released  = 1;
         v->env_state = ENV_DECAY;
     }
+}
+
+/* Deactivate a voice and return its stretcher to the pool */
+static void voice_kill(slicer_t *s, voice_t *v) {
+    if (v->stretcher_idx >= 0) {
+        release_stretcher(s, v->stretcher_idx);
+        v->stretcher_idx = -1;
+    }
+    v->active = 0;
+    v->env_val = 0.0f;
+    v->env_state = ENV_IDLE;
 }
 
 /* ── JSON helpers for state persistence ───────────────────────────────────── */
@@ -1345,7 +1399,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
 
             for (int i = 0; i < frames; i++) {
                 /* envelope */
-                if (v->env_state == ENV_IDLE) { v->active = 0; v->env_val = 0.0f; break; }
+                if (v->env_state == ENV_IDLE) { voice_kill(s, v); break; }
                 float env = v->env_val;
                 switch (v->env_state) {
                     case ENV_ATTACK:
@@ -1361,9 +1415,9 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
                     case ENV_SUSTAIN: env = 1.0f; break;
                     case ENV_DECAY:
                         env *= v->env_decay;
-                        if (env < 0.0001f) { env = 0.0f; v->env_state = ENV_IDLE; v->active = 0; }
+                        if (env < 0.0001f) { env = 0.0f; voice_kill(s, v); }
                         break;
-                    case ENV_IDLE: v->active = 0; break;
+                    case ENV_IDLE: voice_kill(s, v); break;
                 }
                 v->env_val = env;
                 if (!v->active) break;
@@ -1378,11 +1432,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
                 float amp = v->velocity * v->pad_gain * env;
                 if (v->release > 0) {
                     amp *= (float)v->release / (float)RELEASE_SAMPLES;
-                    if (--v->release == 0) {
-                        release_stretcher(s, v->stretcher_idx);
-                        v->stretcher_idx = -1;
-                        v->active = 0; v->env_val = 0.0f;
-                    }
+                    if (--v->release == 0) { voice_kill(s, v); }
                 }
 
                 mix_l[i] += l * amp;
@@ -1395,7 +1445,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
         /* === Original rate-based path (no stretching) === */
         for (int i = 0; i < frames; i++) {
             /* envelope */
-            if (v->env_state == ENV_IDLE) { v->active = 0; v->env_val = 0.0f; break; }
+            if (v->env_state == ENV_IDLE) { voice_kill(s, v); break; }
             float env = v->env_val;
             switch (v->env_state) {
                 case ENV_ATTACK:
@@ -1413,14 +1463,10 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
                     break;
                 case ENV_DECAY:
                     env *= v->env_decay;
-                    if (env < 0.0001f) {
-                        env = 0.0f;
-                        v->env_state = ENV_IDLE;
-                        v->active = 0;
-                    }
+                    if (env < 0.0001f) { env = 0.0f; voice_kill(s, v); }
                     break;
                 case ENV_IDLE:
-                    v->active = 0;
+                    voice_kill(s, v);
                     break;
             }
             v->env_val = env;
@@ -1469,7 +1515,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
             /* guard against out-of-bounds sample access */
             if (pos_int < 0 || pos_int >= s->sample_frames ||
                 pos_next < 0 || pos_next >= s->sample_frames) {
-                v->active = 0; v->env_val = 0.0f; break;
+                voice_kill(s, v); break;
             }
 
             float l = s->sample_data[pos_int*2]   * (1.0f - frac)
@@ -1480,7 +1526,7 @@ static void v2_render_block(void *inst, int16_t *out_lr, int frames) {
             float amp = v->velocity * v->pad_gain * env;
             if (v->release > 0) {
                 amp *= (float)v->release / (float)RELEASE_SAMPLES;
-                if (--v->release == 0) { v->active = 0; v->env_val = 0.0f; }
+                if (--v->release == 0) { voice_kill(s, v); }
             }
 
             mix_l[i] += l * amp;
