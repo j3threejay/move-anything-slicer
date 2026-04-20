@@ -2,7 +2,7 @@
 set -euo pipefail
 
 MOVE_HOST="${MOVE_HOST:-move.local}"
-DEST="/data/UserData/move-anything/modules/sound_generators/slicer"
+DEST="/data/UserData/schwung/modules/sound_generators/slicer"
 
 SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 

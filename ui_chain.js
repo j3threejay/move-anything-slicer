@@ -27,8 +27,8 @@ import {
     MoveMainKnob, MoveMainButton,
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
     MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8
-} from '/data/UserData/move-anything/shared/constants.mjs';
-import { decodeDelta } from '/data/UserData/move-anything/shared/input_filter.mjs';
+} from '/data/UserData/schwung/shared/constants.mjs';
+import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
 
 const SAMPLES_DIR      = '/data/UserData/UserLibrary/Samples';
 const BROWSER_ROOT     = '/data/UserData/UserLibrary';
