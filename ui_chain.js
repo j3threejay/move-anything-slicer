@@ -14,8 +14,11 @@
  *   All other notes:         slice_idx = note - 36  (C2 root, chromatic)
  *   Notes outside [0, slice_count_actual) are silently ignored.
  *
- * Per-pad params stored in JS padState[] — NOT round-tripped from DSP after
- * each pad hit. Knob edits write to DSP and update local state directly.
+ * Per-pad params: DSP is source of truth. padState[] mirrors DSP's pads[]
+ * for display. syncCurrentPad() pulls the selected pad's values from DSP
+ * on init, on selectSlice, and when the DSP's selected_slice changes in
+ * tick(). This survives UI re-evaluation (shadow_ui reloads ui_chain.js
+ * on every chain navigation) since the DSP instance persists.
  *
  * READY view (bank A) shows chromatic range: C2–<endNote> (N slices)
  *   endNote = note name of (36 + slice_count_actual - 1)
@@ -36,6 +39,11 @@ const SCREEN_W         = 128;
 const SCAN_FLASH_TICKS = 120;
 const DBLCLICK_TICKS   = 10;   /* double-click window (tune to taste) */
 const LOOP_LABELS      = ['Off', 'Loop', 'Ping', 'Rev'];
+/* BPM correction ratios, applied to the detected value. BPM_RATIO_UNITY is
+   the index of 1.0 — the neutral position the detector's own answer sits at. */
+const BPM_RATIOS       = [0.5, 2/3, 1, 1.5, 2];
+const BPM_RATIO_LABELS = ['/2', '2/3', 'x1', '3/2', 'x2'];
+const BPM_RATIO_UNITY  = 2;
 const MAX_SLICES       = 128;
 const ROOT_NOTE        = 36;   /* C2 — chromatic mapping root, matches DSP */
 const NOTE_NAMES       = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -63,9 +71,18 @@ const s = {
     globalDecay:      500.0,
     velSens:          1,
     monoMode:         0,
-    globalSpeed:      1.0,
     mode:             'gate',
-    editScope:        'P',       /* 'G'=global, 'P'=per-pad (jog click toggle) */
+    editScope:        'P',       /* 'P'=per-pad, 'G'=global, 'S'=sync (jog click cycles) */
+    sync:             1,
+    sampleBpm:        0,
+    hostBpm:          120,
+    tempoSrc:         'DEF',
+    syncRatio:        1.0,
+    sliceAlgo:        0,         /* 0=transient, 1=random */
+    slices:           16,
+    playthrough:      0,
+    bpmRatio:         1,
+    tempoPoll:        0,
     sliceCountActual: 0,
     slicerState:      0,
     selectedSlice:    0,
@@ -95,10 +112,35 @@ function syncGlobal() {
     s.mode             = gp('mode', 'gate');
     s.velSens          = parseInt(gp('velocity_sens', 1));
     s.monoMode         = parseInt(gp('mono_mode', 0));
-    s.globalSpeed      = parseFloat(gp('speed', 1.0));
     s.sliceCountActual = parseInt(gp('slice_count_actual', 0));
     s.slicerState      = parseInt(gp('slicer_state', 0));
+    s.sync             = parseInt(gp('sync', 1));
+    s.sliceAlgo        = parseInt(gp('slice_algo', 0));
+    s.slices           = parseInt(gp('slices', 16));
+    s.playthrough      = parseInt(gp('playthrough', 0));
     s.sampleName       = s.samplePath ? s.samplePath.split('/').pop().replace(/\.(wav|aif|aiff|mp3|flac)$/i, '') : '';
+    syncTempo();
+}
+
+/* Pull the tempo readout. The DSP derives the stretch ratio itself — the UI
+   only ever displays it, so there is nothing to write back. */
+function syncTempo() {
+    s.sampleBpm = parseFloat(gp('sample_bpm', 0));
+    s.hostBpm   = parseFloat(gp('host_bpm', 120));
+    s.tempoSrc  = gp('tempo_src', 'DEF');
+    s.syncRatio = parseFloat(gp('speed', 1.0));
+}
+
+/* Re-read everything a re-slice changes: count, state, and (on an algo
+   switch) the playthrough default the DSP picked for the new mode. */
+function afterSlice() {
+    s.sliceCountActual = parseInt(gp('slice_count_actual', 0));
+    s.slicerState      = parseInt(gp('slicer_state', 0));
+    s.playthrough      = parseInt(gp('playthrough', 0));
+    s.selectedSlice    = 0;
+    sp('selected_slice', 0);
+    syncCurrentPad();
+    s.dirty = true;
 }
 
 function resetPadState() {
@@ -107,9 +149,26 @@ function resetPadState() {
     }
 }
 
+/* Read the currently selected pad's params from DSP into padState cache.
+   DSP's v2_get_param reads from pads[selected_slice], so we set selected_slice
+   first, then pull each per-pad key. Called on init, selectSlice, and when
+   DSP selected_slice changes in tick. */
+function syncCurrentPad() {
+    const p = padState[s.selectedSlice];
+    p.startTrim    = parseFloat(gp('slice_start_trim', '0'));
+    p.endTrim      = parseFloat(gp('slice_end_trim',   '0'));
+    p.attack       = parseFloat(gp('slice_attack',     '5'));
+    p.decay        = parseFloat(gp('slice_decay',      '500'));
+    p.gain         = parseFloat(gp('slice_gain',       '1'));
+    p.pitchOffset  = parseFloat(gp('slice_pitch',      '0'));
+    p.modeOverride = parseInt(gp('slice_mode',         '1'));
+    p.loop         = parseInt(gp('slice_loop',         '0'));
+}
+
 function selectSlice(idx) {
     s.selectedSlice = idx;
     sp('selected_slice', idx);
+    syncCurrentPad();
     s.dirty = true;
 }
 
@@ -198,7 +257,28 @@ function adjustGlobalDecay(d) {
     s.dirty=true;
 }
 function adjustVelSens(d)   { s.velSens = s.velSens ? 0 : 1; sp('velocity_sens',String(s.velSens)); s.dirty=true; }
-function adjustGlobalSpeed(d) { s.globalSpeed = Math.max(0.5,Math.min(2.0,s.globalSpeed+d*0.01)); sp('speed',s.globalSpeed.toFixed(2)); s.dirty=true; }
+
+/* ── Sync page ([S]) ─────────────────────────────────────────────────────── */
+function adjustSync(d)      { s.sync = s.sync ? 0 : 1; sp('sync',String(s.sync)); syncTempo(); s.dirty=true; }
+/* Detection is automatic; this only corrects the readings it can get wrong —
+   half/double time, and the dotted 3/2 or 2/3 that long material can produce.
+   Ratios apply to the raw estimate, so stepping back to x1 restores it. */
+function adjustBpmRatio(d) {
+    let i = BPM_RATIOS.indexOf(s.bpmRatio); if (i < 0) i = BPM_RATIO_UNITY;
+    i = Math.max(0, Math.min(BPM_RATIOS.length-1, i + (d>0?1:-1)));
+    s.bpmRatio = BPM_RATIOS[i];
+    sp('bpm_ratio', String(s.bpmRatio));
+    syncTempo(); s.dirty = true;
+}
+function adjustAlgo(d)      { s.sliceAlgo = s.sliceAlgo ? 0 : 1; sp('slice_algo',String(s.sliceAlgo)); afterSlice(); }
+function adjustSlices(d)    {
+    const opts = [8,16,32,64];
+    let i = opts.indexOf(s.slices); if (i < 0) i = 1;
+    i = Math.max(0, Math.min(opts.length-1, i + (d>0?1:-1)));
+    s.slices = opts[i]; sp('slices', String(s.slices)); afterSlice();
+}
+function adjustPlaythru(d)  { s.playthrough = s.playthrough ? 0 : 1; sp('playthrough',String(s.playthrough)); s.dirty=true; }
+function doReroll(d)        { sp('reroll','1'); afterSlice(); }
 function adjustThreshold(d) { s.threshold=Math.max(0,Math.min(1,s.threshold+d*0.05)); sp('threshold',s.threshold.toFixed(3)); s.slicerState=0; s.dirty=true; }
 /* per-pad adjusters */
 function adjustPadGain(d)   { pad().gain = Math.max(0,Math.min(2,pad().gain+d*0.05)); sp('slice_gain',pad().gain.toFixed(3)); s.dirty=true; }
@@ -249,9 +329,21 @@ function drawBankA() {
         print(0, 13, '[G] Global', 1);
         print(0, 23, 'Atk:'+Math.round(s.globalAttack-5)+'ms  Dec:'+Math.round(s.globalDecay)+'ms', 1);
         print(0, 33, 'Mono:'+(s.monoMode?'On':'Off'), 1);
-        print(0, 43, 'Speed:'+Math.round(s.globalSpeed*100)+'%', 1);
+        print(0, 43, s.sync ? ('Sync:'+Math.round(s.syncRatio*100)+'%') : 'Sync:Off', 1);
         print(0, 53, rangeStr(), 1);
     }
+}
+
+/* Sync page — tempo is detected and applied automatically, so this is a
+   readout plus the corrections that can't be inferred: octave, slice mode. */
+function drawSyncPage() {
+    clear_screen(); drawSampleName();
+    const smp = s.sampleBpm >= 40 ? s.sampleBpm.toFixed(1) : '--';
+    print(0, 13, '[S] Sync:'+(s.sync?'ON':'OFF')+'  '+Math.round(s.syncRatio*100)+'%', 1);
+    print(0, 23, 'Smp:'+smp+'  Set:'+s.hostBpm.toFixed(1), 1);
+    print(0, 33, 'src:'+s.tempoSrc+'  BPM:'+BPM_RATIO_LABELS[Math.max(0,BPM_RATIOS.indexOf(s.bpmRatio))], 1);
+    print(0, 43, (s.sliceAlgo?'Random':'Transient')+' '+s.sliceCountActual+'sl', 1);
+    print(0, 53, 'Thru:'+(s.playthrough?'On':'Off')+'  K6:reroll', 1);
 }
 function drawBankB() {
     const p = pad();
@@ -300,12 +392,22 @@ function tick() {
         const dspSlice = parseInt(gp('selected_slice', s.selectedSlice));
         if (dspSlice >= 0 && dspSlice < s.sliceCountActual && dspSlice !== s.selectedSlice) {
             s.selectedSlice = dspSlice;
+            syncCurrentPad();
             s.dirty = true;
         }
     }
     if (s.slicerState === 0 || s.slicerState === 2) {
         const pv = parseInt(gp('preview_slices', 0));
         if (pv !== s.previewSlices) { s.previewSlices = pv; s.dirty = true; }
+    }
+    /* Poll the set tempo — it changes under us when the user edits the Move's
+       tempo or loads another set, and nothing pushes that to the module. */
+    if (++s.tempoPoll >= 60) {
+        s.tempoPoll = 0;
+        sp('refresh_tempo', '1');
+        const prevRatio = s.syncRatio, prevHost = s.hostBpm;
+        syncTempo();
+        if (s.syncRatio !== prevRatio || s.hostBpm !== prevHost) s.dirty = true;
     }
     if (s.jogClickTicks > 0) { s.jogClickTicks--; if (s.jogClickTicks === 0 && s.jogClickAction) { s.jogClickAction(); s.jogClickAction = null; } }
     if (s.scanFlashTicks > 0) { s.scanFlashTicks--; if (s.scanFlashTicks===0) s.dirty=true; }
@@ -318,6 +420,7 @@ function tick() {
     if (s.slicerState === 0)      { drawIdle();        return; }
     if (s.slicerState === 2)      { drawNoSlices();    return; }
     if (s.scanFlashTicks > 0)     { drawScanFlash();   return; }
+    if (s.editScope === 'S')      { drawSyncPage();    return; }
     if (s.knobBank === 'B')       { drawBankB();       return; }
     drawBankA();
 }
@@ -378,7 +481,12 @@ function onMidiMessageInternal(data) {
         if (s.slicerState !== 1) {
             s.jogClickAction = () => { triggerScan(); };
         } else {
-            s.jogClickAction = () => { s.editScope = s.editScope === 'G' ? 'P' : 'G'; s.dirty = true; };
+            /* cycle Per-Pad → Global → Sync */
+            s.jogClickAction = () => {
+                s.editScope = s.editScope === 'P' ? 'G' : (s.editScope === 'G' ? 'S' : 'P');
+                if (s.editScope === 'S') syncTempo();
+                s.dirty = true;
+            };
         }
         s.jogClickTicks = DBLCLICK_TICKS;
         return;
@@ -388,7 +496,12 @@ function onMidiMessageInternal(data) {
     if (cc===MoveKnob1||cc===MoveKnob2||cc===MoveKnob3||cc===MoveKnob4) {
         s.knobBank='A'; s.dirty=true;
         const d=decodeDelta(val);
-        if (s.editScope === 'P') {
+        if (s.editScope === 'S') {
+            if (cc===MoveKnob1) adjustSync(d);
+            if (cc===MoveKnob2) adjustBpmRatio(d);
+            if (cc===MoveKnob3) adjustAlgo(d);
+            if (cc===MoveKnob4) adjustSlices(d);
+        } else if (s.editScope === 'P') {
             if (s.slicerState!==1) return;
             if (cc===MoveKnob1) adjustAttack(d);
             if (cc===MoveKnob2) adjustDecay(d);
@@ -398,7 +511,6 @@ function onMidiMessageInternal(data) {
             if (cc===MoveKnob1) adjustGlobalAttack(d);
             if (cc===MoveKnob2) adjustGlobalDecay(d);
             if (cc===MoveKnob3) adjustMonoMode(d);
-            if (cc===MoveKnob4) adjustGlobalSpeed(d);
         }
         return;
     }
@@ -406,8 +518,13 @@ function onMidiMessageInternal(data) {
     /* Knobs 5-8: bank B (global or per-pad based on editScope) */
     if (cc===MoveKnob5||cc===MoveKnob6||cc===MoveKnob7||cc===MoveKnob8) {
         s.knobBank='B'; s.dirty=true;
-        if (s.slicerState!==1) return;
         const d=decodeDelta(val);
+        if (s.editScope === 'S') {
+            if (cc===MoveKnob5) adjustPlaythru(d);
+            if (cc===MoveKnob6) doReroll(d);
+            return;
+        }
+        if (s.slicerState!==1) return;
         if (s.editScope === 'G') {
             if (cc===MoveKnob5) adjustMode(d);
             if (cc===MoveKnob6) adjustPitch(d);
@@ -425,7 +542,15 @@ function onMidiMessageInternal(data) {
 
 function init() {
     syncGlobal();
-    resetPadState();
+    /* If state was restored with slice boundaries but sample_data failed to
+       load (e.g. USB/SD not ready at boot), slicer_state is IDLE despite
+       having slice_count_actual > 0. Retry once and re-read globals. */
+    if (s.slicerState === 0 && s.sliceCountActual > 0 && s.samplePath) {
+        sp('reload_sample', '1');
+        syncGlobal();
+    }
+    s.selectedSlice = parseInt(gp('selected_slice', 0)) || 0;
+    syncCurrentPad();
     browserOpen(SAMPLES_DIR);
     s.view  = s.samplePath ? 'main' : 'browser';
     s.dirty = true;

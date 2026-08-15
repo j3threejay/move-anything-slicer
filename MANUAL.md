@@ -3,26 +3,30 @@
 A transient-detection sample slicer for **Ableton Move** via the
 [move-anything](https://github.com/charlesvestal/move-anything) module system.
 
-Load a WAV file, auto-detect transients, and play slices from the pads or
-keyboard with per-pad envelopes, pitch, gain, and loop modes.
+Load a sample (WAV, AIFF, MP3 or FLAC), auto-detect transients, and play slices
+from the pads or keyboard with per-pad envelopes, pitch, gain, and loop modes.
+
+The sample's tempo is detected on load and the slicer time-stretches it to the
+Move's tempo automatically — no manual speed setting.
 
 ---
 
 ## Quick Start
 
 1. **Browse** - jog wheel scrolls the sample browser. Samples preview on hover.
-2. **Select** - click jog to load a WAV file.
+2. **Select** - click jog to load a sample. Its BPM is detected here.
 3. **Adjust threshold** - turn jog wheel to set detection sensitivity.
 4. **Scan** - click jog to detect transients.
-5. **Play** - hit pads (1-32) to trigger slices.
+5. **Play** - hit pads (1-32) to trigger slices, already in time.
 
 ---
 
 ## Controls
 
-Both banks have two edit scopes, toggled by **clicking jog**: Per-Pad [P]
-(default) and Global [G]. The display shows `[P]` or `[G]` to indicate the
-current scope.
+There are three edit scopes, cycled by **clicking jog**: Per-Pad [P] (default),
+Global [G], and Sync [S]. The display shows `[P]`, `[G]` or `[S]` to indicate
+the current scope. All eight knobs are live in every scope; touching knobs 1-4
+or 5-8 only switches which half the display shows.
 
 ### Bank A - Knobs 1-4 (Envelope & Trim)
 
@@ -39,9 +43,9 @@ current scope.
 
 | Knob | Parameter | Range |
 |------|-----------|-------|
-| 1 | Attack (all pads) | 5 - 500 ms |
+| 1 | Attack (all pads) | 5 - 2000 ms |
 | 2 | Decay (all pads) | 0 - 5000 ms |
-| 3 | — | inactive |
+| 3 | Mono mode | off / on |
 | 4 | — | inactive |
 
 ### Bank B - Knobs 5-8 (Mode, Pitch, Gain, Loop)
@@ -64,11 +68,27 @@ current scope.
 | 7 | Gain | 0 - 100% (master volume) |
 | 8 | Loop mode | off / loop / ping-pong |
 
+### Bank A/B - Sync [S]
+
+The third scope holds everything tempo- and slicing-related.
+
+| Knob | Parameter | Values |
+|------|-----------|--------|
+| 1 | Tempo sync | off / on (default on) |
+| 2 | BPM correction | ÷2, 2/3, ×1, 3/2, ×2 |
+| 3 | Slice mode | Transient / Random |
+| 4 | Slice count | 8 / 16 / 32 / 64 |
+| 5 | Playthrough | off / on |
+| 6 | Re-roll slices | turn to shuffle (Random mode) |
+
+The display shows the detected sample BPM, the Move's tempo, the resulting
+stretch ratio, and which source the tempo came from.
+
 ### Jog Wheel
 
 - **Turn**: scroll browser / adjust threshold
 - **Click (browser/idle)**: select sample / trigger scan
-- **Click (ready)**: toggle Per-Pad / Global edit scope
+- **Click (ready)**: cycle Per-Pad → Global → Sync edit scope
 - **Double-click**: return to file browser to load a new sample
 
 ### Knob Touch
@@ -95,6 +115,48 @@ Per-pad mode lets individual pads behave differently from the global setting.
 | **Off** | Plays once, stops at slice end. |
 | **Loop** | Loops forward within slice bounds until released. |
 | **Ping-Pong** | Bounces back and forth within slice bounds until released. |
+| **Reverse** | Plays the slice backwards once. |
+
+---
+
+## Tempo Sync
+
+The sample's BPM is measured when it loads, and playback is time-stretched
+(Bungee) so it matches the Move's tempo. Pitch is unaffected — the two are
+independent. There is no manual speed control; the ratio is always derived.
+
+**Where the Move's tempo comes from**, in priority order — the `src:` field on
+the Sync page tells you which one is in use:
+
+| Tag | Source |
+|-----|--------|
+| `CLK` | Live MIDI clock, when the slicer is slaved to an external clock |
+| `SET` | The current Set's tempo, read from its `Song.abl` |
+| `CFG` | move-anything's `settings.txt` tempo |
+| `DEF` | Nothing found — falls back to 120 BPM |
+
+**When detection gets it wrong.** Tempo detection is reliable on loops and
+breaks, which is what a slicer is usually fed. The failure it can still make is
+a metrical one: a loop with hats on straight 8ths is genuinely ambiguous between
+*N* BPM and *2N* BPM. Knob 2 on the Sync page corrects it — the ratios apply to
+the original estimate, so stepping back to ×1 always restores it.
+
+Turning sync off leaves the sample at its original speed.
+
+---
+
+## Slice Modes
+
+| Mode | Behavior |
+|------|----------|
+| **Transient** | Slice points land on detected hits. The jog wheel's threshold sets how many of the strongest survive. |
+| **Random** | Slice points are scattered across the sample, snapped to a 16th-note grid at the detected BPM so they still land in time. Knob 6 re-rolls them. |
+
+Random mode applies immediately — there's no scan step — and switching to it
+turns **Playthrough** on. With playthrough, a held pad ignores its own slice end
+and keeps playing through whatever follows, so each pad becomes an entry point
+into the sample rather than a self-contained hit. Switching back to Transient
+turns it off again; knob 5 overrides either way.
 
 ---
 

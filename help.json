@@ -5,24 +5,27 @@
       "title": "Overview",
       "lines": [
         "Transient-detection",
-        "sample slicer.",
+        "sample slicer with",
+        "automatic tempo sync.",
         "",
-        "Load a WAV file,",
-        "detect transients,",
-        "play slices via",
-        "pads or keyboard."
+        "Samples are detected",
+        "and time-stretched to",
+        "the Move's tempo."
       ]
     },
     {
       "title": "Quick Start",
       "lines": [
         "1. Browse & select",
-        "   a WAV sample",
+        "   a sample",
         "2. Adjust threshold",
         "   with jog wheel",
         "3. Click jog to scan",
         "4. Hit pads to play",
-        "   slices"
+        "   slices",
+        "",
+        "BPM is detected on",
+        "load - no setup."
       ]
     },
     {
@@ -40,10 +43,13 @@
             "Global [G] mode:",
             " K1: Attack (all)",
             " K2: Decay (all)",
-            " K3-K4: inactive",
+            " K3: Mono mode",
             "",
-            "Jog click toggles",
-            "[P] / [G] scope."
+            "Sync [S] page:",
+            " K1: Tempo sync",
+            " K2: BPM correction",
+            " K3: Slice mode",
+            " K4: Slice count"
           ]
         },
         {
@@ -61,8 +67,9 @@
             " K7: Gain (global)",
             " K8: Loop mode",
             "",
-            "Jog click toggles",
-            "[P] / [G] scope."
+            "Sync [S] page:",
+            " K5: Playthrough",
+            " K6: Re-roll slices"
           ]
         },
         {
@@ -72,9 +79,10 @@
             "Main: adjust thresh",
             "Click: scan/select",
             "",
-            "Ready: click toggles",
-            " Per-Pad / Global",
-            " edit scope.",
+            "Ready: click cycles",
+            " [P] Per-Pad ->",
+            " [G] Global ->",
+            " [S] Sync",
             "",
             "Double-click jog to",
             "return to file browser",
@@ -91,6 +99,52 @@
             "",
             "Display persists",
             "across pad presses."
+          ]
+        },
+        {
+          "title": "Sync Page [S]",
+          "lines": [
+            "Sample BPM is found",
+            "automatically and the",
+            "sample is stretched",
+            "to the Move's tempo.",
+            "",
+            "Smp: detected BPM",
+            "Set: Move's tempo",
+            "src: where the tempo",
+            " came from -",
+            " CLK live MIDI clock",
+            " SET current Set",
+            " CFG settings file",
+            " DEF fallback 120",
+            "",
+            "K2 corrects the rare",
+            "wrong reading:",
+            " /2 2/3 x1 3/2 x2",
+            "A loop with straight",
+            "8ths can read double."
+          ]
+        },
+        {
+          "title": "Slice Modes",
+          "lines": [
+            "Transient: slices are",
+            " placed on detected",
+            " hits (jog sets how",
+            " many survive).",
+            "",
+            "Random: slice points",
+            " are scattered over",
+            " the sample, snapped",
+            " to a 16th grid at",
+            " the detected BPM.",
+            " K6 re-rolls them.",
+            "",
+            "Random turns on",
+            "Playthrough, so a",
+            "held pad keeps",
+            "playing past the",
+            "next slice point."
           ]
         }
       ]
@@ -117,9 +171,13 @@
         " slice regardless",
         " of pad hold time",
         "",
-        "Loop: forward or",
-        " ping-pong looping",
-        " within slice bounds"
+        "Loop: forward, ping-",
+        " pong or reverse",
+        " within slice bounds",
+        "",
+        "Playthrough: ignores",
+        " the slice end - runs",
+        " on while held"
       ]
     }
   ]
