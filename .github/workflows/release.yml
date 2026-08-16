@@ -15,6 +15,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # src/bungee is a submodule and pulls in pffft + eigen of its own.
+          # Without this the build compiles an empty tree and the release
+          # ships no asset, while release.json already points at the URL.
+          submodules: recursive
 
       - name: Build via Docker
         run: ./scripts/build.sh
