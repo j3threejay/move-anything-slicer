@@ -37,6 +37,12 @@ BUNGEE_DIR="src/bungee"
 rm -rf dist/slicer
 mkdir -p dist/slicer build/bungee
 
+# -fno-gnu-unique on every C++ compile: Eigen's function-local statics in
+# inline functions (trig_reduce_huge's two_over_pi) are otherwise emitted as
+# STB_GNU_UNIQUE symbols, and glibc marks any DSO exporting one NODELETE:
+# dlclose() never unmaps it, so the module's memory is never freed and
+# reloading after an update reuses the old image instead of the new file.
+
 # --- Phase 1: Build Bungee static library ---
 
 echo "==> Compiling pffft ..."
@@ -48,7 +54,7 @@ $CC -O3 -fPIC -ffast-math -fno-finite-math-only -fno-exceptions \
 echo "==> Compiling Bungee C++ sources ..."
 for src in $BUNGEE_DIR/src/*.cpp; do
     obj="build/bungee/$(basename "$src" .cpp).o"
-    $CXX -O3 -fPIC -std=c++20 -fwrapv \
+    $CXX -O3 -fPIC -std=c++20 -fwrapv -fno-gnu-unique \
         -I"$BUNGEE_DIR/submodules/eigen" \
         -I"$BUNGEE_DIR/submodules" \
         -I"$BUNGEE_DIR" \
@@ -67,7 +73,7 @@ ${CROSS_PREFIX}ar rcs build/bungee/libbungee.a build/bungee/*.o
 
 echo "==> Compiling dsp.so ..."
 $CXX \
-    -O3 -g -shared -fPIC -std=c++20 \
+    -O3 -g -shared -fPIC -std=c++20 -fno-gnu-unique \
     -Isrc -I"$BUNGEE_DIR" \
     src/dsp/dsp.cpp \
     build/bungee/libbungee.a \
